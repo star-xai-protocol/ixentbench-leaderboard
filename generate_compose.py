@@ -62,7 +62,21 @@ services:
     image: {green_image}
     platform: linux/amd64
     container_name: green-agent
-    command: ["--host", "0.0.0.0", "--port", "{green_port}", "--card-url", "http://green-agent:{green_port}"]
+    
+    # 👇 CAMBIO 1: ENTRYPOINT DE DIAGNÓSTICO
+    # Usamos 'sh -c' para ejecutar comandos de Linux antes de Python.
+    # 1. echo: Nos confirma que el contenedor está vivo.
+    # 2. find: Nos muestra qué archivos hay realmente dentro (¿está src/green_agent.py ahí?).
+    # 3. python: Intenta ejecutar el script forzando la salida de logs (-u).
+    entrypoint: [
+      "sh", "-c",
+      "echo '🟢 DEBUG: CONTENEDOR VIVO'; echo '📂 ARCHIVOS EN /app:'; ls -R /app; echo '🚀 INTENTANDO ARRANCAR PYTHON...'; python -u src/green_agent.py || echo '❌ FALLO SRC, PROBANDO RAIZ...' && python -u green_agent.py"
+    ]
+
+    # 👇 CAMBIO 2: VACIAMOS EL COMMAND
+    # Esto es vital. Borramos los argumentos ["--host", "--port"...] para que no interfieran.
+    command: []
+
     environment:{green_env}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/.well-known/agent-card.json"]

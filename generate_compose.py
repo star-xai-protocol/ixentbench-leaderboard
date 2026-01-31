@@ -60,33 +60,28 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: MODO "VIGILANTE" (LIMPIO Y PURO)
+# 🏆 FASE FINAL: ARQUITECTURA LIMPIA (SIN PARCHES)
+# Usamos este script porque la imagen Docker ya contiene el código "Vigilante" correcto.
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
+    # Docker usará tu imagen local reconstruida
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # 💉 INYECCIÓN FORZADA (PARCHE VIGILANTE):
-    # 1. Imports: Inyectamos 'glob', 'time', 'json' en el servidor.
-    # 2. RPC Dummy: Bucle infinito (while True).
-    #    - Mira en 'src/results/' cada 2 segundos.
-    #    - Si NO hay JSON: Envía 'working' (Mantiene al cliente esperando y al juego vivo).
-    #    - Si HAY JSON: Envía 'completed' (Cierra la conexión y permite subir archivos).
-    entrypoint: [
-      "/bin/sh", "-c",
-      "echo '🧹 LIMPIEZA Y PARCHEO...'; sed -i \\"1i from flask import Response, stream_with_context; import time; import glob; import os\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        print('👁️ VIGILANTE ACTIVO: Esperando resultados...')\\\\n        while True:\\\\n            results = glob.glob('src/results/*.json')\\\\n            if results:\\\\n                print(f'🏁 JUEGO TERMINADO. Archivo encontrado: {{results[0]}}')\\\\n                time.sleep(2)\\\\n                yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'completed' }}, 'final': True, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n                break\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; echo '🟢 PARCHE VIGILANTE APLICADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
-    ]
+    # ✅ SIN PARCHES: Arrancamos normal.
+    # El código interno ya tiene el bucle 'while True' y 'glob' que añadiste.
+    entrypoint: ["python", "-u", "src/green_agent.py", "--host", "0.0.0.0", "--port", "9009"]
     
     command: []
     
     environment:
       - PORT=9009
       - LOG_LEVEL=INFO
-      # 👇 Force Recreate para asegurar que usa el nuevo parche
-      - FORCE_RECREATE=final_attempt_{timestamp}
+      # Forzamos recreación para asegurar que usa la imagen nueva
+      - FORCE_RECREATE=native_run_{timestamp}
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
@@ -291,7 +286,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO ACTUALIZADO: Listo para ejecutar.")
+    print("✅ CÓDIGO LIMPIO: Usando imagen nativa con Vigilante integrado.")
 
 if __name__ == "__main__":
     main()

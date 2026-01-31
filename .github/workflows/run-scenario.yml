@@ -13,6 +13,10 @@ jobs:
       contents: write
       packages: read
 
+    env:
+          # 👇 ESTO ES OBLIGATORIO. Sin esto, el secreto se queda en GitHub y no baja a Docker.
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

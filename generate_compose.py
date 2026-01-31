@@ -59,7 +59,8 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: SMART WAIT (CON GLOB INYECTADO)
+# 🏆 FASE FINAL: MODO "JUEGO REAL" OBLIGATORIO
+# Este script fuerza la recreación del contenedor y aplica el parche de espera activa.
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -68,12 +69,18 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 💉 INYECCIÓN DE CÓDIGO EXPLICADA:
-    # Fíjate en el primer 'sed'. Ahí inyectamos los imports necesarios (glob, time, os).
-    # Luego definimos la lógica para buscar archivos .json en 'src/results/'.
+    # 💉 INYECCIÓN FORZADA:
+    # 1. Imports: 'glob', 'time', 'json'.
+    # 2. Agent Card: La versión correcta.
+    # 3. RPC Dummy (EL VIGILANTE):
+    #    - Bucle infinito (while True).
+    #    - Mira en 'src/results/' cada 2 segundos.
+    #    - Si NO hay JSON: Envía 'working' (Mantiene al cliente esperando y al juego vivo).
+    #    - Si HAY JSON: Envía 'completed' (Cierra la conexión ordenadamente).
+    #    - Esto garantiza que el Purple Agent tenga tiempo de jugar TODA la partida.
     entrypoint: [
       "/bin/sh", "-c",
-      "if ! grep -q 'def agent_card' src/green_agent.py; then echo '🛠️ APLICANDO PARCHE SMART WAIT...'; sed -i \\"1i from flask import Response, stream_with_context; import time; import glob; import os\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        while True:\\\\n            # VIGILANTE: Buscamos si se ha generado el resultado del juego\\\\n            results = glob.glob('src/results/*.json')\\\\n            if results:\\\\n                # JUEGO TERMINADO: Enviamos señal de éxito al cliente\\\\n                print(f'🏁 GAME OVER DETECTED: {{results[0]}}')\\\\n                yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'completed' }}, 'final': True, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n                break\\\\n            # JUEGO EN CURSO: Mantenemos la linea viva\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; else echo '✅ PARCHE YA APLICADO'; fi; echo '🟢 SISTEMA DE SUBIDA AUTOMÁTICA LISTO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
+      "echo '🧹 LIMPIEZA Y PARCHEO...'; sed -i \\"1i from flask import Response, stream_with_context; import time; import glob; import os\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        print('👁️ VIGILANTE ACTIVO: Esperando resultados...')\\\\n        while True:\\\\n            results = glob.glob('src/results/*.json')\\\\n            if results:\\\\n                print(f'🏁 JUEGO TERMINADO. Archivo encontrado: {{results[0]}}')\\\\n                # Damos 2 segundos extra para asegurar escritura en disco\\\\n                time.sleep(2)\\\\n                yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'completed' }}, 'final': True, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n                break\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; echo '🟢 PARCHE VIGILANTE APLICADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
     ]
     
     command: []
@@ -81,6 +88,8 @@ services:
     environment:
       - PORT=9009
       - LOG_LEVEL=INFO
+      # 👇 Truco sucio: Cambiamos esto para forzar a Docker a recrear el contenedor limpio
+      - FORCE_RECREATE=try_final_real_game_{timestamp}
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
@@ -110,7 +119,6 @@ networks:
   agent-network:
     driver: bridge
 """
-
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -276,15 +284,17 @@ def main():
       - agent-network
 """
 
+    # Inyectamos timestamp para forzar recreación
     final_compose = COMPOSE_TEMPLATE.format(
-        participant_services=participant_services
+        participant_services=participant_services,
+        timestamp=int(time.time())
     )
 
     with open("docker-compose.yml", "w") as f:
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO ACTUALIZADO: Glob inyectado correctamente.")
+    print("✅ CÓDIGO ACTUALIZADO: Modo 'Juego Real' forzado. Ahora sí verás los turnos.")
 
 if __name__ == "__main__":
     main()

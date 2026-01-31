@@ -5,6 +5,7 @@ import os
 import re
 import sys
 
+import time
 import tomli
 import shutil
 
@@ -58,21 +59,6 @@ ENV_PATH = ".env.example"
 
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
-
-¡Vaya fallo más tonto! Tienes toda la razón. 🤦‍♂️
-
-He usado time.time() en la parte de abajo del script para forzar la recreación del contenedor, pero se me olvidó poner el import time arriba del todo en el script de Python (generate_compose.py). Por eso te da el NameError.
-
-Aquí tienes el archivo CORREGIDO (con el import time añadido en la línea 5).
-
-Copia y pega esto entero. Es la versión definitiva con el "Vigilante" que espera a los archivos.
-
-Python
-import argparse
-import os
-import tomli
-import shutil
-import time  # <--- ¡ESTO ES LO QUE FALTABA!
 
 # 🏆 FASE FINAL: MODO "VIGILANTE" (LIMPIO Y PURO)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml

@@ -59,30 +59,27 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # 1. Tu imagen Universal
+    # 1. IMAGEN: Usamos la versión Universal que subiste
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # 🔨 EL MARTILLO (DEBUG TOTAL):
-    # Secuestramos el arranque. Si esto no imprime logs, nada lo hará.
-    entrypoint: [
-      "/bin/sh", "-c",
-      "echo '🟢 INICIANDO CONTENEDOR...'; echo '📂 CARPETA SRC:'; ls -la src/; echo '🚀 LANZANDO PYTHON...'; python -u src/green_agent.py --host 0.0.0.0 --port {green_port}"
-    ]
+    # 2. ENTRYPOINT (CRÍTICO): Sobrescribimos el del Dockerfile.
+    #    'python -u' obliga a mostrar logs inmediatamente (arregla el silencio).
+    entrypoint: ["python", "-u", "src/green_agent.py"]
     
-    # Dejamos command vacío para que no estorbe
-    command: []
+    # 3. ARGUMENTOS: Los que tu script espera realmente
+    command: ["--host", "0.0.0.0", "--port", "{green_port}"]
     
     environment:{green_env}
     
-    # Healthcheck estándar
+    # 4. HEALTHCHECK (CRÍTICO): Apunta a /status, la única ruta real de tu agente.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
       timeout: 5s
       retries: 20
-      start_period: 10s
+      start_period: 5s
       
     depends_on:{green_depends}
     networks:

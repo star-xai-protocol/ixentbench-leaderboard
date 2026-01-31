@@ -59,23 +59,20 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: TU AGENT CARD + RPC FIX
+# 🏆 FASE FINAL: ARQUITECTURA LIMPIA (IMAGEN NATIVA)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
+    # 👇 Docker bajará tu imagen NUEVA automáticamente
     image: ghcr.io/star-xai-protocol/capsbench:latest
+    pull_policy: always
     platform: linux/amd64
     container_name: green-agent
     
-    # 💉 INYECCIÓN DE CÓDIGO MAESTRA:
-    # 1. Importamos librerías necesarias.
-    # 2. Inyectamos TU AGENT CARD exacta (con skills, capabilities, url...).
-    # 3. Inyectamos el Dummy RPC con un objeto COMPLEJO (contextId, taskId) para que no falle la validación.
-    entrypoint: [
-      "/bin/sh", "-c",
-      "sed -i \\"1i from flask import Response, stream_with_context\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify({{ 'name': 'CapsBench Green Agent', 'description': 'Legacy Wrapper', 'version': '1.0.0', 'url': 'http://green-agent:9009/', 'protocolVersion': '0.3.0', 'capabilities': {{ 'streaming': True }}, 'defaultInputModes': ['text'], 'defaultOutputModes': ['text'], 'skills': [{{ 'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks' }}] }})\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'active' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; echo '🟢 PARCHE A2A COMPLETO APLICADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
-    ]
+    # ✅ SIN PARCHES: Arrancamos el script directamente.
+    # El código interno ya tiene las rutas A2A y los imports que subiste.
+    entrypoint: ["python", "-u", "src/green_agent.py", "--host", "0.0.0.0", "--port", "9009"]
     
     command: []
     
@@ -285,7 +282,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO ACTUALIZADO: Agent Card correcta + RPC Fix.")
+    print("✅ LISTO: Usando imagen oficial capsbench:latest (recién horneada).")
 
 if __name__ == "__main__":
     main()

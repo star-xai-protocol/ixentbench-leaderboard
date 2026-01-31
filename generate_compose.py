@@ -59,22 +59,17 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    image: ghcr.io/star-xai-protocol/capsbench:latest
+    # 🧪 PRUEBA DE TESTIGO: Usamos una imagen OFICIAL (no la tuya)
+    # Si esto funciona, confirmamos que TU imagen tiene el problema.
+    image: python:3.11-slim
     platform: linux/amd64
     container_name: green-agent
     
-    # ⚡ SOLUCIÓN DE ARRANQUE:
-    # 1. /bin/sh: Mantiene el contenedor vivo lo suficiente para procesar.
-    # 2. python -u: Muestra los errores en vivo (sin esto, el error se traga).
-    entrypoint: ["/bin/sh", "-c", "echo '🟢 INICIANDO...'; python -u src/green_agent.py --host 0.0.0.0 --port {green_port}"]
-    
-    # Importante: Dejamos command vacío
-    command: []
-    
-    environment:{green_env}
+    # Arrancamos un servidor web tonto en el puerto 9009
+    command: ["python", "-m", "http.server", "9009"]
     
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:9009"]
       interval: 5s
       timeout: 5s
       retries: 20

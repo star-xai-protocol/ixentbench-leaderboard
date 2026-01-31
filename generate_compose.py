@@ -59,21 +59,27 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # Usamos tu imagen pública latest
+    # ✅ MANTÉN TU IMAGEN MANUAL (Esto es clave)
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # 🕵️ AUTORIDAD FORENSE:
-    # No ejecutamos Python. Leemos el archivo para ver si tiene argparse.
-    entrypoint: ["cat", "src/green_agent.py"]
+    # ❌ BORRA la línea 'entrypoint' (la que tenía el "cat")
     
-    # Borramos el command
-    command: []
+    # ✅ RESTAURA el comando de ejecución
+    command: ["--host", "0.0.0.0", "--port", "9009"]
     
     environment:{green_env}
-    # (Deja el resto igual: networks, etc. 
-    #  ELIMINA 'healthcheck' y 'depends_on' temporalmente para que no falle esperando)
+    
+    # ✅ RESTAURA el healthcheck para que el Purple Agent sepa cuándo entrar
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+      
+    depends_on:{green_depends}
     networks:
       - agent-network
 

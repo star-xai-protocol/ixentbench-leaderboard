@@ -59,7 +59,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: DNI INYECTADO
+# 🏆 FASE FINAL: DNI INYECTADO (CORREGIDO)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -69,13 +69,12 @@ services:
     container_name: green-agent
     
     # 💉 LA INYECCIÓN MAESTRA:
-    # 1. Usamos 'sed' para buscar la línea "app = Flask(__name__)"
-    # 2. Justo debajo, inyectamos la función agent_card() en una sola línea.
-    # 3. Esto crea el endpoint "/.well-known/agent-card.json" que pide el cliente.
-    # 4. Luego arrancamos Python normalmente.
+    # 1. Usamos 'sed' para buscar "app = Flask".
+    # 2. Inyectamos la ruta del DNI justo debajo.
+    # 3. IMPORTANTE: Usamos dobles llaves {{{{ }}}} en el JSON para que Python no falle al generar el archivo.
     entrypoint: [
       "/bin/sh", "-c",
-      "sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify({'name': 'CapsBench Green Agent', 'version': '1.0.0', 'description': 'Legacy Wrapper'})\\" src/green_agent.py; echo '🟢 DNI FALSIFICADO CON ÉXITO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
+      "sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify({{ 'name': 'CapsBench Green Agent', 'version': '1.0.0', 'description': 'Legacy Wrapper' }})\\" src/green_agent.py; echo '🟢 DNI FALSIFICADO CON ÉXITO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
     ]
     
     command: []
@@ -314,7 +313,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ PARCHE DE DNI APLICADO")
+    print("✅ PARCHE DE DNI APLICADO (SYNTAX FIXED)")
 
 if __name__ == "__main__":
     main()

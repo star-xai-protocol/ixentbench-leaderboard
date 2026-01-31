@@ -59,7 +59,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🚀 FASE FINAL: Ejecución Real Blindada
+# 🚀 FASE FINAL (CORREGIDA): Sin variables rotas. Puerto 9009 Fijo.
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -68,26 +68,25 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 🔨 EL ARRANQUE SEGURO:
-    # 1. Imprimimos "ARRANCANDO".
-    # 2. Listamos los archivos (ls -R) para ver dónde está tu código realmente.
-    # 3. Ejecutamos Python con -u (unbuffered) para ver cualquier error al instante.
-    entrypoint: ["/bin/sh", "-c", "echo '🟢 ARRANCANDO PYTHON...'; echo '📂 CONTENIDO DE LA CARPETA:'; ls -R /app; python -u src/green_agent.py --host 0.0.0.0 --port {green_port}"]
+    # 🔨 ARRANQUE BLINDADO:
+    # 1. Imprimimos el contenido de la carpeta para depurar.
+    # 2. Arrancamos Python forzando el puerto 9009 (sin variables).
+    entrypoint: ["/bin/sh", "-c", "echo '🟢 ARRANCANDO...'; echo '📂 ARCHIVOS:'; ls -R /app; python -u src/green_agent.py --host 0.0.0.0 --port 9009"]
     
-    # Command vacío para que no estorbe
     command: []
     
-    environment:{green_env}
+    # Environment básico fijo
+    environment:
+      - PORT=9009
+      - LOG_LEVEL=INFO
     
-    # Recuperamos el healthcheck ahora que sabemos que el contenedor vive
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 5s
 
-    depends_on:{green_depends}
     networks:
       - agent-network
 
@@ -283,6 +282,7 @@ def main():
         config = tomli.load(f)
 
     participant_services = ""
+    # Generamos los participantes (Purple Agent)
     for p in config.get("participants", []):
         name = p.get("name", "purple_agent")
         env_vars = p.get("env", {})
@@ -303,6 +303,7 @@ def main():
       - agent-network
 """
 
+    # Ahora solo pasamos participant_services, porque el resto es fijo.
     final_compose = COMPOSE_TEMPLATE.format(
         participant_services=participant_services
     )
@@ -311,7 +312,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ MODO EJECUCIÓN ACTIVADO")
+    print("✅ MODO EJECUCIÓN (FIXED) ACTIVADO")
 
 if __name__ == "__main__":
     main()

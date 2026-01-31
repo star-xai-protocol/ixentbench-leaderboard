@@ -13,6 +13,10 @@ jobs:
       contents: write
       packages: read
 
+    # 👇 AÑADE ESTO AQUÍ (Nivel Global del Job)
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,7 +57,6 @@ jobs:
         id: check_ghcr
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           if [ -n "$GHCR_TOKEN" ]; then
             echo "has_token=true" >> $GITHUB_OUTPUT
@@ -70,9 +73,6 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Run assessment
-        env:
-          # 👇 AQUÍ ESTÁ LA SOLUCIÓN. Le pasamos la llave al comando docker.
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: docker compose up --timestamps --no-color # --exit-code-from agentbeats-client --abort-on-container-exit
 
       - name: Record provenance

@@ -59,29 +59,27 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # 1. Usamos tu imagen buena (Universal)
+    # Imagen universal
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # 🚨 FUERZA BRUTA (Bypass total):
-    # Ignoramos el Entrypoint del Dockerfile.
-    # Lanzamos el comando completo a mano usando 'sh -c' para evitar líos de rutas.
-    # 'python -u': OBLIGA a imprimir los logs instantáneamente (sin buffer).
-    entrypoint: ["sh", "-c", "cd /app && python -u src/green_agent.py --host 0.0.0.0 --port 9009"]
+    # 🐻 LA TRAMPA DE OSO:
+    # 1. Lista archivos para confirmar ruta.
+    # 2. Intenta arrancar Python redirigiendo errores.
+    # 3. Si falla, grita el código de error.
+    # 4. SE QUEDA DORMIDO 1 MINUTO para que nos dé tiempo a leerlo.
+    entrypoint: [
+      "sh", "-c",
+      "echo '📂 CHECK FILE:'; ls -l src/green_agent.py; echo '🚀 RUNNING PYTHON...'; python -u src/green_agent.py --host 0.0.0.0 --port 9009 2>&1 || echo '☠️ MUERTE SUBITA - CODIGO DE ERROR: $?'; echo '💤 DUERMO 60 SEGUNDOS PARA QUE LEAS EL ERROR...'; sleep 60"
+    ]
     
-    # Dejamos command vacío (ya lo hemos puesto todo en el entrypoint)
     command: []
     
     environment:{green_env}
     
-    # Healthcheck estándar para que el Purple sepa cuándo entrar
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
+    # Desactivamos healthcheck un momento para que no mate al contenedor por lento
+    # healthcheck: ... (BORRADO TEMPORALMENTE)
       
     depends_on:{green_depends}
     networks:

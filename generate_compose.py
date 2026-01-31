@@ -59,32 +59,29 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # Imagen universal
+    # 👇 1. FORZAMOS LA IMAGEN QUE ARREGLASTE A MANO
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # 🐻 LA TRAMPA DE OSO:
-    # 1. Lista archivos para confirmar ruta.
-    # 2. Intenta arrancar Python redirigiendo errores.
-    # 3. Si falla, grita el código de error.
-    # 4. SE QUEDA DORMIDO 1 MINUTO para que nos dé tiempo a leerlo.
-    entrypoint: [
-      "sh", "-c",
-      "echo '📂 CHECK FILE:'; ls -l src/green_agent.py; echo '🚀 RUNNING PYTHON...'; python -u src/green_agent.py --host 0.0.0.0 --port 9009 2>&1 || echo '☠️ MUERTE SUBITA - CODIGO DE ERROR: $?'; echo '💤 DUERMO 60 SEGUNDOS PARA QUE LEAS EL ERROR...'; sleep 60"
-    ]
-    
-    command: []
+    # 👇 2. COMANDO NORMAL (Tu Python ya tiene 'argparse', funcionará bien)
+    command: ["--host", "0.0.0.0", "--port", "{green_port}"]
     
     environment:{green_env}
     
-    # Desactivamos healthcheck un momento para que no mate al contenedor por lento
-    # healthcheck: ... (BORRADO TEMPORALMENTE)
+    # 👇 3. LA CLAVE DEL ÉXITO (Healthcheck corregido)
+    # Antes buscaba un json que no existe. Ahora busca /status que SÍ existe.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
       
     depends_on:{green_depends}
     networks:
       - agent-network
-
+      
 {participant_services}
   agentbeats-client:
     image: ghcr.io/agentbeats/agentbeats-client:v1.0.0

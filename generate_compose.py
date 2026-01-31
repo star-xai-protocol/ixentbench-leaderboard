@@ -57,8 +57,6 @@ DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
-COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
-
 services:
   green-agent:
     # 1. IMAGEN MANUAL CORRECTA

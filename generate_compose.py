@@ -66,7 +66,7 @@ services:
   green-agent:
     # 👇 Docker bajará tu imagen NUEVA automáticamente
     image: ghcr.io/star-xai-protocol/capsbench:latest
-    pull_policy: always
+    # pull_policy: always
     platform: linux/amd64
     container_name: green-agent
     

@@ -59,22 +59,22 @@ COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # 🧪 PRUEBA DE TESTIGO: Usamos una imagen OFICIAL (no la tuya)
-    # Si esto funciona, confirmamos que TU imagen tiene el problema.
-    image: python:3.11-slim
+    # 🧟 PRUEBA ZOMBIE: Usamos Alpine, la imagen más ligera que existe.
+    image: alpine:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # Arrancamos un servidor web tonto en el puerto 9009
-    command: ["python", "-m", "http.server", "9009"]
+    # 🔨 EL FIX: Bucle infinito. 
+    # Esto mantiene el contenedor encendido SIEMPRE. No se puede apagar por error.
+    entrypoint: ["/bin/sh", "-c", "echo '🟢 ZOMBIE VIVO en puerto 9009'; while true; do nc -l -p 9009 -e echo 'Hola'; done"]
     
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9009"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
-      
+    # Borramos command
+    command: []
+    
+    # ❌ QUITAMOS EL HEALTHCHECK:
+    # Eliminamos la causa del error anterior. Docker confiará en que está vivo.
+    
+    environment:{green_env}
     depends_on:{green_depends}
     networks:
       - agent-network

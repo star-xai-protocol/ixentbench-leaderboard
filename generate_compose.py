@@ -59,7 +59,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: INYECCIÓN INTELIGENTE (NO DUPLICADOS)
+# 🏆 FASE FINAL: MODO "JUEGO REAL" (KEEP-ALIVE LOOP)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -68,13 +68,15 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 💉 INYECCIÓN CON MEMORIA:
-    # 1. Comprobamos con 'grep' si ya hemos parcheado el archivo.
-    # 2. Solo si NO está parcheado (!), ejecutamos los 'sed'.
-    # 3. Esto evita el error "AssertionError: Overwriting existing endpoint" si el contenedor se reinicia.
+    # 💉 INYECCIÓN DE CÓDIGO (MODO INFINITO):
+    # 1. Imports: Añadimos 'time' para poder esperar.
+    # 2. RPC Dummy: AHORA TIENE UN BUCLE INFINITO (while True).
+    #    - Envía el estado 'working' cada 2 segundos.
+    #    - Esto mantiene al 'agentbeats-client' conectado y vivo.
+    #    - Mientras tanto, el 'purple_agent' puede jugar la partida tranquilamente.
     entrypoint: [
       "/bin/sh", "-c",
-      "if ! grep -q 'def agent_card' src/green_agent.py; then echo '🛠️ APLICANDO PARCHE...'; sed -i \\"1i from flask import Response, stream_with_context\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; else echo '✅ PARCHE YA APLICADO (SALTANDO)'; fi; echo '🟢 ARRANQUE SEGURO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
+      "if ! grep -q 'def agent_card' src/green_agent.py; then echo '🛠️ APLICANDO PARCHE INFINITO...'; sed -i \\"1i from flask import Response, stream_with_context; import time\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        while True:\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; else echo '✅ PARCHE YA APLICADO'; fi; echo '🟢 ARRANQUE CON JUEGO REAL ACTIVADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
     ]
     
     command: []
@@ -285,7 +287,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO ACTUALIZADO: Inyección inteligente (idempotente).")
+    print("✅ CÓDIGO ACTUALIZADO: Bucle Infinito activado. ¡Ahora sí se jugará la partida!")
 
 if __name__ == "__main__":
     main()

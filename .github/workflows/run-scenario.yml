@@ -53,6 +53,7 @@ jobs:
         id: check_ghcr
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           if [ -n "$GHCR_TOKEN" ]; then
             echo "has_token=true" >> $GITHUB_OUTPUT

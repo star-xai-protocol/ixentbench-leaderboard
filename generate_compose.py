@@ -60,28 +60,27 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: ARQUITECTURA LIMPIA (SIN PARCHES)
-# Usamos este script porque la imagen Docker ya contiene el código "Vigilante" correcto.
+# 🏆 FASE FINAL: MODO "INSOMNE" (PARA SUBIDA SEGURA)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    # Docker usará tu imagen local reconstruida
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
     
-    # ✅ SIN PARCHES: Arrancamos normal.
-    # El código interno ya tiene el bucle 'while True' y 'glob' que añadiste.
-    entrypoint: ["python", "-u", "src/green_agent.py", "--host", "0.0.0.0", "--port", "9009"]
+    # 💉 INYECCIÓN VIGILANTE (MANTENEMOS ESTO PORQUE FUNCIONA):
+    entrypoint: [
+      "/bin/sh", "-c",
+      "echo '🧹 LIMPIANDO PARCHES...'; python -c \\"lines = open('src/green_agent.py').readlines(); clean = [l for l in lines if 'agent_card' not in l and 'dummy_rpc' not in l and '.well-known' not in l]; open('src/green_agent.py', 'w').writelines(clean)\\"; echo '🛠️ APLICANDO CORRECCIÓN FLASK + VIGILANTE...'; sed -i \\"1i from flask import Flask, request, jsonify, Response, stream_with_context; from flask_cors import CORS; import time; import glob; import os; import json\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        print('👁️ VIGILANTE ACTIVO: Esperando resultados...')\\\\n        while True:\\\\n            results = glob.glob('src/results/*.json')\\\\n            if results:\\\\n                print(f'🏁 JUEGO TERMINADO. Archivo encontrado: {{results[0]}}')\\\\n                time.sleep(5)\\\\n                yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'completed' }}, 'final': True, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n                break\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; echo '🟢 SISTEMA ARREGLADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
+    ]
     
     command: []
     
     environment:
       - PORT=9009
       - LOG_LEVEL=INFO
-      # Forzamos recreación para asegurar que usa la imagen nueva
-      - FORCE_RECREATE=native_run_{timestamp}
+      - FORCE_RECREATE=upload_fix_{timestamp}
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
@@ -264,12 +263,14 @@ def main():
         for k, v in env_vars.items():
             env_block += f"\n      - {k}={v}"
 
+        # 👇 AQUÍ ESTÁ EL TRUCO: entrypoint con sleep infinity
         participant_services += f"""
   {name}:
     image: ghcr.io/star-xai-protocol/capsbench-purple:latest
     platform: linux/amd64
     container_name: {name}
-    entrypoint: ["python", "-u", "purple_ai.py"]
+    # 💤 CAMBIO CLAVE: Ejecuta el script y luego DUERME para no matar el contenedor
+    entrypoint: ["/bin/sh", "-c", "python -u purple_ai.py; echo '✅ AGENTE TERMINÓ. DURMIENDO PARA PERMITIR SUBIDA...'; sleep infinity"]
     {env_block}
     depends_on:
       - green-agent
@@ -286,7 +287,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO LIMPIO: Usando imagen nativa con Vigilante integrado.")
+    print("✅ CÓDIGO ACTUALIZADO: Agente Púrpura configurado para no cerrarse al terminar.")
 
 if __name__ == "__main__":
     main()

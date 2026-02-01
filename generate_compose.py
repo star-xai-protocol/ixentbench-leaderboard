@@ -11,10 +11,10 @@ import base64
 from pathlib import Path
 from typing import Any
 
-# --- CÓDIGO DEL VIGILANTE: VERSIÓN FINAL (BASE64 + SPLIT EVENTS) ---
+# --- CÓDIGO DEL VIGILANTE: VERSIÓN HÍBRIDA (SCHEMA ESTRICTO + SPLIT EVENTS) ---
 VIGILANTE_CODE = r"""
 # ==========================================
-# PARCHE VIGILANTE: SPLIT EVENTS PROTOCOL
+# PARCHE VIGILANTE: STRICT SCHEMA & SPLIT PROTOCOL
 # ==========================================
 import time
 import glob
@@ -22,7 +22,7 @@ import json
 import os
 from flask import Response, stream_with_context, jsonify
 
-# 1. AGENT CARD COMPLETA
+# 1. AGENT CARD COMPLETA (Requerida por el cliente para iniciar)
 @app.route('/.well-known/agent-card.json')
 def agent_card_patched():
     return jsonify({
@@ -42,7 +42,7 @@ def agent_card_patched():
         }]
     })
 
-# 2. RPC ROBUSTO (Separa Artefacto de Estado)
+# 2. RPC ROBUSTO (Maneja la lectura y el envío con el esquema exacto)
 @app.route('/', methods=['POST', 'GET'])
 def dummy_rpc_patched():
     def generate():
@@ -51,13 +51,13 @@ def dummy_rpc_patched():
         task_id = "task-1"
         
         while True:
-            # Busca resultados
+            # Busca archivos de resultados en las rutas posibles
             found = glob.glob('src/results/*.json') + glob.glob('results/*.json')
             
             if found:
                 file_path = found[0]
                 print(f"🏁 FIN DETECTADO: {file_path}", flush=True)
-                time.sleep(2) 
+                time.sleep(2) # Espera técnica para asegurar escritura en disco
                 
                 try:
                     with open(file_path, 'r') as f:
@@ -65,12 +65,21 @@ def dummy_rpc_patched():
                 except Exception:
                     file_content = "{}"
 
-                artifact_data = {
+                # --- SCHEMA ESTRICTO ---
+                # Construimos el artefacto con TODOS los campos que exige Pydantic
+                artifact_object = {
+                    "artifactId": "result-final-1", # Identificador único obligatorio
                     "name": os.path.basename(file_path),
-                    "content": file_content
+                    "kind": "file",                 # Tipo obligatorio
+                    "parts": [{                     # Lista de partes obligatoria
+                        "text": file_content,
+                        "mimeType": "application/json"
+                    }]
                 }
 
                 # PASO 1: ENVIAR EL ARTEFACTO (Evento separado)
+                # 'final': False mantiene la conexión abierta.
+                # 'artifact': objeto singular (el cliente lo añade a su lista interna)
                 yield 'data: ' + json.dumps({
                     "jsonrpc": "2.0",
                     "id": 1, 
@@ -78,13 +87,15 @@ def dummy_rpc_patched():
                         "contextId": ctx_id,
                         "taskId": task_id,
                         "final": False, 
-                        "artifact": artifact_data
+                        "artifact": artifact_object 
                     }
                 }) + '\n\n'
                 
-                time.sleep(1)
+                time.sleep(2) # Pausa vital para que el cliente procese el artefacto
 
                 # PASO 2: ENVIAR FIN DE TAREA
+                # 'final': True cierra la tarea.
+                # El cliente ahora guardará los artefactos recibidos en el paso anterior.
                 yield 'data: ' + json.dumps({
                     "jsonrpc": "2.0",
                     "id": 1, 
@@ -97,7 +108,7 @@ def dummy_rpc_patched():
                 }) + '\n\n'
                 break
             
-            # HEARTBEAT
+            # HEARTBEAT (Mantiene vivo el cliente mientras el agente piensa)
             yield 'data: ' + json.dumps({
                 "jsonrpc": "2.0", 
                 "id": 1, 
@@ -113,7 +124,7 @@ def dummy_rpc_patched():
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 if __name__ == "__main__":
-    print("🟢 SERVIDOR VIGILANTE (SPLIT) INICIANDO...", flush=True)
+    print("🟢 SERVIDOR VIGILANTE (HYBRID FIX) INICIANDO...", flush=True)
     app.run(host="0.0.0.0", port=9009)
 """
 

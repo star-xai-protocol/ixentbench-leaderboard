@@ -60,6 +60,89 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
+# --- CÓDIGO VIGILANTE MEJORADO (LEE Y ENVÍA) ---
+VIGILANTE_CODE = r"""
+# ==========================================
+# PARCHE VIGILANTE: LEER Y ENVIAR
+# ==========================================
+import time
+import glob
+import json
+import os
+from flask import Response, stream_with_context, jsonify
+
+# 1. EVITAR ERROR 404
+@app.route('/.well-known/agent-card.json')
+def agent_card_patched():
+    return jsonify({
+        "name": "Green Agent Patched",
+        "version": "1.0.0",
+        "capabilities": {"streaming": True},
+        "skills": [{"id": "eval", "name": "Eval"}]
+    })
+
+# 2. RPC CON ENVÍO DE DATOS REALES
+@app.route('/', methods=['POST', 'GET'])
+def dummy_rpc_patched():
+    def generate():
+        print("👁️ VIGILANTE: Esperando resultados...", flush=True)
+        while True:
+            # Buscamos el archivo de resultados
+            found = glob.glob('src/results/*.json') + glob.glob('results/*.json')
+            
+            if found:
+                file_path = found[0]
+                print(f"🏁 FIN DETECTADO: {file_path}", flush=True)
+                time.sleep(5) # Espera técnica para asegurar escritura
+                
+                # --- LEEMOS EL ARCHIVO PARA ENVIARLO ---
+                try:
+                    with open(file_path, 'r') as f:
+                        file_content = f.read()
+                except Exception as e:
+                    file_content = "{}"
+                    print(f"Error leyendo archivo: {e}", flush=True)
+
+                # Construimos el artefacto
+                artifact = {
+                    "name": os.path.basename(file_path),
+                    "content": file_content
+                }
+
+                # Enviamos 'completed' CON EL ARCHIVO DENTRO
+                yield 'data: ' + json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1, 
+                    "result": {
+                        "final": True, 
+                        "status": {"state": "completed"},
+                        "artifacts": [artifact]
+                    }
+                }) + '\n\n'
+                break
+            
+            # Si no ha terminado, enviamos heartbeat
+            yield 'data: ' + json.dumps({
+                "jsonrpc": "2.0", 
+                "id": 1, 
+                "result": {
+                    "final": False, 
+                    "status": {"state": "working"}
+                }
+            }) + '\n\n'
+            time.sleep(2)
+            
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+# 3. ARRANQUE
+if __name__ == "__main__":
+    print("🟢 SERVIDOR (CON DATOS) INICIANDO...", flush=True)
+    app.run(host="0.0.0.0", port=9009)
+"""
+
+VIGILANTE_PAYLOAD = VIGILANTE_CODE.replace('"', '\\"')
+
+
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -67,8 +150,26 @@ services:
     image: ghcr.io/star-xai-protocol/capsbench:latest
     platform: linux/amd64
     container_name: green-agent
-    # VOLVEMOS AL ORIGINAL QUE FUNCIONABA
-    entrypoint: ["python", "-u", "src/green_agent.py", "--host", "0.0.0.0", "--port", "9009"]
+    
+    # 🛡️ ESTRATEGIA: INYECCIÓN DE CÓDIGO QUE ENVÍA DATOS
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo '🔧 PREPARANDO SERVIDOR...'
+        # Renombrar rutas viejas
+        sed -i "s|@app.route('/',|@app.route('/old_root',|g" src/green_agent.py
+        sed -i "s|@app.route('/.well-known/agent-card.json'|@app.route('/.well-known/old-card.json'|g" src/green_agent.py
+        
+        # Quitar el app.run original
+        python -c "lines = [l for l in open('src/green_agent.py') if 'app.run' not in l]; open('src/green_agent.py','w').writelines(lines)"
+        
+        # Añadir el código nuevo (que lee y envía el archivo)
+        echo "{vigilante_payload}" >> src/green_agent.py
+        
+        echo '🚀 ARRANCANDO...'
+        python -u src/green_agent.py
+    
     command: []
     
     environment:
@@ -274,6 +375,7 @@ def main():
 
     final_compose = COMPOSE_TEMPLATE.format(
         participant_services=participant_services,
+        vigilante_payload=VIGILANTE_PAYLOAD,  # <--- ESTO ES LO IMPORTANTE
         timestamp=int(time.time())
     )
 

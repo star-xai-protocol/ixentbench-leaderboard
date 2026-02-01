@@ -140,7 +140,8 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=9009)
 """
 
-VIGILANTE_PAYLOAD = VIGILANTE_CODE.replace('"', '\\"')
+# Aplanamos el código a una línea para no romper el YAML
+VIGILANTE_PAYLOAD = VIGILANTE_CODE.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
 
 
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml

@@ -60,7 +60,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🏆 FASE FINAL: MODO "INSOMNE" (PARA SUBIDA SEGURA)
+# 🏆 FASE FINAL: MODO "RENAME & APPEND" (SINTAXIS SEGURA)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -69,10 +69,14 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 💉 INYECCIÓN VIGILANTE (MANTENEMOS ESTO PORQUE FUNCIONA):
+    # 💉 INYECCIÓN INTELIGENTE:
+    # 1. RENAME: Usamos sed solo para cambiar la URL de las rutas viejas (ej: '/' -> '/old').
+    #    Esto libera la ruta '/' para nosotros sin romper el código original ni la indentación.
+    # 2. APPEND: Usamos python para escribir el código nuevo AL FINAL del archivo.
+    #    Esto garantiza que la sintaxis y los espacios sean perfectos.
     entrypoint: [
       "/bin/sh", "-c",
-      "echo '🧹 LIMPIANDO PARCHES...'; python -c \\"lines = open('src/green_agent.py').readlines(); clean = [l for l in lines if 'agent_card' not in l and 'dummy_rpc' not in l and '.well-known' not in l]; open('src/green_agent.py', 'w').writelines(clean)\\"; echo '🛠️ APLICANDO CORRECCIÓN FLASK + VIGILANTE...'; sed -i \\"1i from flask import Flask, request, jsonify, Response, stream_with_context; from flask_cors import CORS; import time; import glob; import os; import json\\" src/green_agent.py; sed -i \\"/app = Flask(__name__)/a @app.route('/.well-known/agent-card.json')\\\\ndef agent_card(): return jsonify(name='CapsBench Green Agent', description='Legacy Wrapper', version='1.0.0', url='http://green-agent:9009/', protocolVersion='0.3.0', capabilities={{'streaming': True}}, defaultInputModes=['text'], defaultOutputModes=['text'], skills=[{{'id': 'capsbench_eval', 'name': 'CapsBench Evaluation', 'description': 'Handles agent evaluation tasks', 'tags': ['evaluation']}}])\\\\n@app.route('/', methods=['POST', 'GET'])\\\\ndef dummy_rpc():\\\\n    def generate():\\\\n        print('👁️ VIGILANTE ACTIVO: Esperando resultados...')\\\\n        while True:\\\\n            results = glob.glob('src/results/*.json')\\\\n            if results:\\\\n                print(f'🏁 JUEGO TERMINADO. Archivo encontrado: {{results[0]}}')\\\\n                time.sleep(5)\\\\n                yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'completed' }}, 'final': True, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n                break\\\\n            yield 'data: ' + json.dumps({{ 'jsonrpc': '2.0', 'result': {{ 'contextId': 'ctx-1', 'taskId': 'task-1', 'status': {{ 'state': 'working' }}, 'final': False, 'artifacts': [] }}, 'id': 1 }}) + chr(10) + chr(10)\\\\n            time.sleep(2)\\\\n    return Response(stream_with_context(generate()), mimetype='text/event-stream')\\" src/green_agent.py; echo '🟢 SISTEMA ARREGLADO'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
+      "echo '🔧 LIBERANDO RUTAS...'; sed -i \"s|@app.route('/',|@app.route('/old_root',|g\" src/green_agent.py; sed -i \"s|@app.route('/.well-known/agent-card.json'|@app.route('/.well-known/old-card.json'|g\" src/green_agent.py; echo '📝 ESCRIBIENDO PARCHE SEGURO...'; python -c \"with open('src/green_agent.py', 'a') as f: f.write('\\n# --- PARCHE VIGILANTE ---\\nimport time\\nimport glob\\nimport json\\nimport os\\nfrom flask import Response, stream_with_context, jsonify\\n\\n@app.route(\\'/.well-known/agent-card.json\\')\\ndef agent_card_new():\\n    return jsonify({\\'name\\': \\'Green\\', \\'version\\': \\'1.0\\', \\'skills\\': []})\\n\\n@app.route(\\'/\\', methods=[\\'POST\\', \\'GET\\'])\\ndef dummy_rpc_new():\\n    def generate():\\n        print(\\'👁️ VIGILANTE: START\\', flush=True)\\n        while True:\\n            # Buscamos en ambas carpetas por seguridad\\n            res = glob.glob(\\'src/results/*.json\\') + glob.glob(\\'results/*.json\\')\\n            if res:\\n                print(f\\'🏁 FIN DETECTADO: {res[0]}\\', flush=True)\\n                time.sleep(5)\\n                yield \\'data: \\' + json.dumps({\\'jsonrpc\\': \\'2.0\\', \\'result\\': {\\'final\\': True, \\'status\\': {\\'state\\': \\'completed\\'}}, \\'id\\': 1}) + \\'\\\\n\\\\n\\'\\n                break\\n            yield \\'data: \\' + json.dumps({\\'jsonrpc\\': \\'2.0\\', \\'result\\': {\\'final\\': False, \\'status\\': {\\'state\\': \\'working\\'}}, \\'id\\': 1}) + \\'\\\\n\\\\n\\'\\n            time.sleep(2)\\n    return Response(stream_with_context(generate()), mimetype=\\'text/event-stream\\')\\n')\"; echo '🟢 PARCHE APLICADO SIN ERRORES'; python -u src/green_agent.py --host 0.0.0.0 --port 9009"
     ]
     
     command: []
@@ -80,7 +84,8 @@ services:
     environment:
       - PORT=9009
       - LOG_LEVEL=INFO
-      - FORCE_RECREATE=upload_fix_{timestamp}
+      # 👇 Nuevo nombre para forzar recreación limpia
+      - FORCE_RECREATE=syntax_fix_{timestamp}
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
@@ -263,14 +268,14 @@ def main():
         for k, v in env_vars.items():
             env_block += f"\n      - {k}={v}"
 
-        # 👇 AQUÍ ESTÁ EL TRUCO: entrypoint con sleep infinity
+        # 👇 MANTENEMOS EL "SLEEP INFINITY" PORQUE FUNCIONÓ DE MARAVILLA
         participant_services += f"""
   {name}:
     image: ghcr.io/star-xai-protocol/capsbench-purple:latest
     platform: linux/amd64
     container_name: {name}
-    # 💤 CAMBIO CLAVE: Ejecuta el script y luego DUERME para no matar el contenedor
-    entrypoint: ["/bin/sh", "-c", "python -u purple_ai.py; echo '✅ AGENTE TERMINÓ. DURMIENDO PARA PERMITIR SUBIDA...'; sleep infinity"]
+    # 💤 Ejecuta y duerme para salvar la partida
+    entrypoint: ["/bin/sh", "-c", "python -u purple_ai.py; echo '✅ AGENTE TERMINÓ. DURMIENDO...'; sleep infinity"]
     {env_block}
     depends_on:
       - green-agent
@@ -287,7 +292,7 @@ def main():
         f.write(final_compose)
     
     shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ CÓDIGO ACTUALIZADO: Agente Púrpura configurado para no cerrarse al terminar.")
+    print("✅ CÓDIGO ACTUALIZADO: Estrategia Rename+Append (Sin errores de indentación).")
 
 if __name__ == "__main__":
     main()

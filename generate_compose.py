@@ -124,14 +124,27 @@ def dummy_rpc():
                 if (time.time() - os.path.getmtime(last_file)) < 600:
                     print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
                     
-                    # Mensaje FINAL (Status: Completed)
+                    # Mensaje FINAL (Status: Completed) - Opción 1
+                    # Calculamos ruta absoluta para la URI
+                    abs_path = os.path.abspath(last_file)
+                    
                     final_msg = {
                         "jsonrpc": "2.0", "id": 1,
                         "result": {
                             "contextId": "ctx", "taskId": "task", "id": "task",
                             "status": {"state": "completed"}, "final": True,
                             "messageId": "msg-done", "role": "assistant",
-                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}]
+                            "parts": [
+                                {"text": "Game Finished", "mimeType": "text/plain"},
+                                {
+                                    "file": {
+                                        "uri": "file://" + abs_path,
+                                        "mimeType": "application/jsonl",
+                                        "name": os.path.basename(last_file)
+                                    }
+                                }
+                            ],
+                            "artifacts": []  # Necesario para evitar TypeError en bucles del cliente
                         }
                     }
                     yield "data: " + json.dumps(final_msg) + "\n\n"

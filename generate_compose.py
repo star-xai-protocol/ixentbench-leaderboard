@@ -8,6 +8,7 @@ import base64
 from pathlib import Path
 from typing import Any
 
+# --- DEPENDENCIAS ---
 try:
     import tomli
 except ImportError:
@@ -28,12 +29,17 @@ except ImportError:
     sys.exit(1)
 
 
+# --- CONFIGURACIÓN ---
 AGENTBEATS_API_URL = "https://agentbeats.dev/api/agents"
+COMPOSE_PATH = "docker-compose.yml"
+A2A_SCENARIO_PATH = "a2a-scenario.toml"
+ENV_PATH = ".env.example"
+DEFAULT_PORT = 9009
+DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# --- 🛠️ CÓDIGO DEL PARCHE DEL SERVIDOR (EL VIGILANTE) ---
-# Este script se ejecutará DENTRO del contenedor del Green Agent.
-# Modifica el código fuente original para forzar "Long Polling" (Bloqueo).
-# Esto evita que el cliente se cierre antes de tiempo.
+
+# --- PARCHE DEL SERVIDOR (EL "VIGILANTE" ROBUSTO) ---
+# Se ejecuta DENTRO del contenedor. Modifica green_agent.py en memoria/disco.
 SERVER_PATCH_SOURCE = r"""
 import sys
 import os
@@ -47,22 +53,23 @@ target_file = 'src/green_agent.py'
 if not os.path.exists(target_file):
     target_file = 'green_agent.py'
 
+print(f"📄 Archivo objetivo: {target_file}", flush=True)
+
 with open(target_file, 'r') as f:
     content = f.read()
 
-# 1. Asegurar imports
+# 1. Asegurar imports necesarios al principio
 if "import time" not in content:
     content = "import time, glob, os\n" + content
 if "from flask import Flask" in content and "jsonify" not in content:
     content = content.replace("from flask import Flask", "from flask import Flask, jsonify")
 
-# 2. Desactivar la ruta antigua dummy_rpc (cualquiera que sea su forma)
-# Comentamos el decorador para que Flask ignore la funcion original
-content = content.replace("@app.route('/', methods=['POST', 'GET'])", "# DISABLED_OLD_ROUTE")
-content = content.replace("@app.route(\"/\", methods=['POST', 'GET'])", "# DISABLED_OLD_ROUTE")
+# 2. Desactivar la ruta antigua dummy_rpc comentando sus decoradores
+# Esto evita conflictos de rutas duplicadas en Flask.
+content = content.replace("@app.route('/',", "# @app.route('/',")
+content = content.replace("@app.route(\"/\",", "# @app.route(\"/\",")
 
-# 3. Inyectar la NUEVA logica de Bloqueo
-# Esta funcion intercepta la peticion y NO responde hasta que la partida termina.
+# 3. Código de la NUEVA función de bloqueo (Long Polling)
 new_logic = r'''
 @app.route('/', methods=['POST', 'GET'])
 def blocking_rpc():
@@ -71,14 +78,12 @@ def blocking_rpc():
     
     while True:
         # Buscar archivos de resultados recientes (.jsonl o .json)
-        # Buscamos en todas las carpetas probables
         patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl']
         files = []
         for p in patterns:
             files.extend(glob.glob(p))
             
         if files:
-            # Ordenar por fecha
             files.sort(key=os.path.getmtime)
             last_file = files[-1]
             
@@ -87,7 +92,7 @@ def blocking_rpc():
                 filename = os.path.basename(last_file)
                 print(f"✅ [FIN] Detectado: {filename}. Liberando cliente.", flush=True)
                 
-                # Devolver JSON Final con estructura plana (Pydantic Friendly)
+                # JSON Plano para pasar validación estricta
                 return jsonify({
                     "jsonrpc": "2.0", "id": 1,
                     "result": {
@@ -98,61 +103,94 @@ def blocking_rpc():
                     }
                 })
         
-        # Timeout de seguridad (20 min) para no colgar el CI eternamente
+        # Timeout de seguridad (20 min)
         if time.time() - start_time > 1200:
             return jsonify({"error": "timeout_waiting_results"})
             
         time.sleep(5)
 '''
 
-# 4. Insertar la logica antes del bloque Main
-if "if __name__" in content:
-    parts = content.split("if __name__")
-    new_content = parts[0] + "\n" + new_logic + "\n\nif __name__" + parts[1]
+# 4. INYECCIÓN SEGURA: Insertar después de crear la 'app'
+# No tocamos el final del archivo (if __name__...) para evitar romper el arranque.
+if "app = Flask(__name__)" in content:
+    parts = content.split("app = Flask(__name__)")
+    # Reconstruimos: Todo lo anterior + app=Flask + NUESTRA LOGICA + Todo lo posterior
+    new_content = parts[0] + "app = Flask(__name__)\n" + new_logic + "\n" + parts[1]
+    
+    with open(target_file, 'w') as f:
+        f.write(new_content)
+    print("✅ [PATCH] Inyeccion realizada correctamente.", flush=True)
 else:
-    new_content = content + "\n" + new_logic
+    print("❌ [PATCH] No se encontró 'app = Flask(__name__)', no se pudo parchear.", flush=True)
+    sys.exit(1)
 
-# 5. Guardar y Ejecutar
-with open(target_file, 'w') as f:
-    f.write(new_content)
-
-print("✅ [PATCH] Servidor modificado. Arrancando...", flush=True)
+# 5. Ejecutar el servidor
+print("🚀 [PATCH] Arrancando servidor...", flush=True)
 sys.stdout.flush()
-
-# Pasamos los argumentos originales al script modificado
 os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
 
-# Codificamos el parche en Base64 para que sea seguro ponerlo en YAML
+# Codificación Base64 para el YAML
 PATCH_B64 = base64.b64encode(SERVER_PATCH_SOURCE.encode('utf-8')).decode('utf-8')
 
 
+def resolve_image(agent: dict, name: str) -> None:
+    has_image = "image" in agent
+    has_id = "agentbeats_id" in agent
+
+    if has_image and has_id:
+        print(f"Error: {name} has both 'image' and 'agentbeats_id'")
+        sys.exit(1)
+    elif has_image:
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions")
+            sys.exit(1)
+        print(f"Using {name} image: {agent['image']}")
+    elif has_id:
+        info = fetch_agent_info(agent["agentbeats_id"])
+        agent["image"] = info["docker_image"]
+        # CAPTURAMOS EL ID DEL WEBHOOK
+        if "id" in info:
+            agent["webhook_id"] = info["id"]
+        print(f"Resolved {name} image: {agent['image']}")
+    else:
+        print(f"Error: {name} must have 'image' or 'agentbeats_id'")
+        sys.exit(1)
+
+
 def fetch_agent_info(agentbeats_id: str) -> dict:
-    """Fetch agent info from agentbeats.dev API."""
     url = f"{AGENTBEATS_API_URL}/{agentbeats_id}"
     try:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.HTTPError as e:
+    except Exception as e:
         print(f"Error: Failed to fetch agent {agentbeats_id}: {e}")
         sys.exit(1)
-    except requests.exceptions.JSONDecodeError:
-        print(f"Error: Invalid JSON response for agent {agentbeats_id}")
+
+
+def parse_scenario(scenario_path: Path) -> dict[str, Any]:
+    toml_data = scenario_path.read_text()
+    data = tomli.loads(toml_data)
+
+    green = data.get("green_agent", {})
+    resolve_image(green, "green_agent")
+
+    participants = data.get("participants", [])
+    names = [p.get("name") for p in participants]
+    duplicates = [name for name in set(names) if names.count(name) > 1]
+    if duplicates:
+        print(f"Error: Duplicate participant names: {duplicates}")
         sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Request failed for agent {agentbeats_id}: {e}")
-        sys.exit(1)
+
+    for participant in participants:
+        name = participant.get("name", "unknown")
+        resolve_image(participant, f"participant '{name}'")
+
+    return data
 
 
-COMPOSE_PATH = "docker-compose.yml"
-A2A_SCENARIO_PATH = "a2a-scenario.toml"
-ENV_PATH = ".env.example"
-
-DEFAULT_PORT = 9009
-DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
-
-# 🟢 PLANTILLA SERVIDOR: Usa la cápsula Base64
+# 🟢 PLANTILLA SERVIDOR
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -161,8 +199,7 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX INDESTRUCTIBLE: Decodifica el parche y lo ejecuta.
-    # No hay scripts multilínea en el YAML, por lo que no puede haber error de sintaxis.
+    # 👇 FIX: Decodificar y ejecutar el parche.
     entrypoint: 
       - /bin/sh
       - -c
@@ -197,7 +234,7 @@ networks:
     driver: bridge
 """
 
-# 🟢 PARTICIPANTE: MODO ZOMBI (Healthcheck exit 0)
+# 🟢 PLANTILLA PARTICIPANTE (Modo Zombi)
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -224,66 +261,9 @@ endpoint = "http://green-agent:{green_port}"
 {config}"""
 
 
-def resolve_image(agent: dict, name: str) -> None:
-    """Resolve docker image for an agent."""
-    has_image = "image" in agent
-    has_id = "agentbeats_id" in agent
-
-    if has_image and has_id:
-        print(f"Error: {name} has both 'image' and 'agentbeats_id' - use one or the other")
-        sys.exit(1)
-    elif has_image:
-        if os.environ.get("GITHUB_ACTIONS"):
-            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions")
-            sys.exit(1)
-        print(f"Using {name} image: {agent['image']}")
-    elif has_id:
-        info = fetch_agent_info(agent["agentbeats_id"])
-        agent["image"] = info["docker_image"]
-        
-        # 🟢 CAPTURAMOS EL ID DEL WEBHOOK
-        if "id" in info:
-            agent["webhook_id"] = info["id"]
-        
-        print(f"Resolved {name} image: {agent['image']}")
-    else:
-        print(f"Error: {name} must have either 'image' or 'agentbeats_id' field")
-        sys.exit(1)
-
-
-def parse_scenario(scenario_path: Path) -> dict[str, Any]:
-    toml_data = scenario_path.read_text()
-    data = tomli.loads(toml_data)
-
-    green = data.get("green_agent", {})
-    resolve_image(green, "green_agent")
-
-    participants = data.get("participants", [])
-
-    names = [p.get("name") for p in participants]
-    duplicates = [name for name in set(names) if names.count(name) > 1]
-    if duplicates:
-        print(f"Error: Duplicate participant names found: {', '.join(duplicates)}")
-        sys.exit(1)
-
-    for participant in participants:
-        name = participant.get("name", "unknown")
-        resolve_image(participant, f"participant '{name}'")
-
-    return data
-
-
 def format_env_vars(env_dict: dict[str, Any]) -> str:
     env_vars = {**DEFAULT_ENV_VARS, **env_dict}
     lines = [f"      - {key}={value}" for key, value in env_vars.items()]
-    return "\n" + "\n".join(lines)
-
-
-def format_depends_on(services: list) -> str:
-    lines = []
-    for service in services:
-        lines.append(f"      {service}:")
-        lines.append(f"        condition: service_healthy")
     return "\n" + "\n".join(lines)
 
 
@@ -293,7 +273,6 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
 
     participant_names = [p["name"] for p in participants]
 
-    # Generamos los servicios de los participantes
     participant_services = "\n".join([
         PARTICIPANT_TEMPLATE.format(
             name=p["name"],
@@ -312,8 +291,8 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_env=format_env_vars(green.get("env", {})),
         green_depends=" []",  
         participant_services=participant_services,
-        client_depends=format_depends_on(all_services),
-        patch_b64=PATCH_B64  # Inyectamos el parche codificado
+        client_depends=" []", # Romper dependencia circular en el cliente
+        patch_b64=PATCH_B64
     )
 
 
@@ -328,12 +307,10 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
             f"role = \"{p['name']}\"",
             f"endpoint = \"http://{p['name']}:{DEFAULT_PORT}\"",
         ]
-        
         if "webhook_id" in p:
              lines.append(f"agentbeats_id = \"{p['webhook_id']}\"")
         elif "agentbeats_id" in p:
              lines.append(f"agentbeats_id = \"{p['agentbeats_id']}\"")
-        
         participant_lines.append("\n".join(lines) + "\n")
 
     config_section = scenario.get("config", {})
@@ -349,31 +326,21 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
 def generate_env_file(scenario: dict[str, Any]) -> str:
     green = scenario["green_agent"]
     participants = scenario.get("participants", [])
-
     secrets = set()
     env_var_pattern = re.compile(r'\$\{([^}]+)\}')
 
-    for value in green.get("env", {}).values():
-        for match in env_var_pattern.findall(str(value)):
-            secrets.add(match)
-
-    for p in participants:
-        for value in p.get("env", {}).values():
+    for agent in [green] + participants:
+        for value in agent.get("env", {}).values():
             for match in env_var_pattern.findall(str(value)):
                 secrets.add(match)
 
-    if not secrets:
-        return ""
-
-    lines = []
-    for secret in sorted(secrets):
-        lines.append(f"{secret}=")
-
+    if not secrets: return ""
+    lines = [f"{secret}=" for secret in sorted(secrets)]
     return "\n".join(lines) + "\n"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Docker Compose from scenario.toml")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", type=Path)
     args = parser.parse_args()
 
@@ -395,7 +362,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (ROBUST BASE64 FIX)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL ROBUST INJECTION)")
 
 if __name__ == "__main__":
     main()

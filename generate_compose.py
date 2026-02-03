@@ -64,34 +64,66 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇👇👇 INICIO DEL FIX 404 (CON DOBLES LLAVES) 👇👇👇
+    # 👇👇👇 INICIO DEL FIX QUIRÚRGICO 👇👇👇
     entrypoint:
       - /bin/sh
       - -c
       - |
-        echo "🔧 APLICANDO FIX DE AGENT-CARD..."
-        cat <<EOF >> src/green_agent.py
+        echo "🔧 APLICANDO FIX INTELIGENTE (INYECCIÓN)..."
+        
+        # Usamos python para editar el archivo sin romperlo
+        python -c "
+import sys
+try:
+    # Leer el archivo original
+    with open('src/green_agent.py', 'r') as f:
+        lines = f.readlines()
 
-        from flask import jsonify
-        @app.route('/.well-known/agent-card.json', methods=['GET'])
-        def agent_card_fix_injected():
-            return jsonify({{
-                "name": "GreenAgent Fix",
-                "version": "1.0.0",
-                "description": "Fixed Runtime",
-                "url": "http://green-agent:9009/",
-                "protocolVersion": "0.3.0",
-                "capabilities": {{}}
-            }})
-        EOF
+    # 1. Insertar el import arriba del todo
+    lines.insert(0, 'from flask import jsonify\\n')
+
+    # 2. Definir el parche (La tarjeta que falta)
+    # ATENCION: Usamos dobles llaves para que Python genere el JSON bien
+    patch = '''
+@app.route('/.well-known/agent-card.json', methods=['GET'])
+def agent_card_fix_injected():
+    return jsonify({{
+        'name': 'GreenAgent Fix',
+        'version': '1.0.0',
+        'description': 'Fixed Runtime',
+        'url': 'http://green-agent:9009/',
+        'protocolVersion': '0.3.0',
+        'capabilities': {{}}
+    }})
+'''
+    # 3. Buscar dónde empieza el bloque main e insertar JUSTO ANTES
+    inserted = False
+    for i, line in enumerate(lines):
+        if 'if __name__' in line:
+            lines.insert(i, patch)
+            inserted = True
+            break
+    
+    # Si no encuentra el main (raro), lo pone al final por si acaso
+    if not inserted:
+        lines.append(patch)
+
+    # Guardar cambios
+    with open('src/green_agent.py', 'w') as f:
+        f.writelines(lines)
+    print('✅ PARCHE APLICADO CORRECTAMENTE')
+
+except Exception as e:
+    print(f'❌ ERROR APLICANDO PARCHE: {{e}}')
+"
         
         echo "🚀 ARRANCANDO SERVIDOR..."
         exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
-    # 👆👆👆 FIN DEL FIX 404 👆👆👆
+    # 👆👆👆 FIN DEL FIX 👆👆👆
 
     environment:{green_env}
     healthcheck:
-      # Test rápido /status
+      # Mantenemos el test rápido /status
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
       timeout: 3s

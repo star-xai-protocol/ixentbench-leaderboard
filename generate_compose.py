@@ -38,7 +38,10 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO ---
+# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO (FIX_SCRIPT_V4) ---
+# 1. Desactiva rutas antiguas usando Regex (robusto).
+# 2. Inyecta rutas nuevas (Card + RPC) ANTES del main (evita código muerto).
+# 3. Asegura imports.
 FIX_SCRIPT_SOURCE = r"""
 import sys, os, re, json, time, glob
 
@@ -55,62 +58,37 @@ if not os.path.exists(target_file):
 with open(target_file, 'r') as f:
     content = f.read()
 
-# === 1. Añadir imports necesarios ===
+# === 1. ASEGURAR IMPORTS ===
 if "import time" not in content:
     content = "import time, glob, os, json\n" + content
-if "from flask import Flask" in content and "jsonify" not in content:
+if "from flask import Flask" in content:
     content = content.replace("from flask import Flask", "from flask import Flask, jsonify, request")
+else:
+    content = "from flask import Flask, jsonify, request\n" + content
 
-# === 2. AÑADIR RUTA OBLIGATORIA: agent-card.json (CORREGIDA) ===
-# Se han añadido 'url' y 'skills' que faltaban en el intento anterior.
-agent_card_route = r'''
-@app.route("/.well-known/agent-card.json")
+# === 2. CÓDIGO NUEVO (CARD + RPC) ===
+injected_code = r'''
+# --- INJECTED CODE START ---
+@app.route("/.well-known/agent-card.json", methods=["GET"])
 def agent_card_fix():
-    card = {
-        "name": "Green Agent (Patched)",
-        "description": "Agente verde parcheado para CapsBench / AgentBeats",
-        "version": "1.0",
+    return jsonify({
+        "schema_version": "a2a-v1",
+        "name": "green-agent-patched",
+        "description": "Patched for AgentBeats",
+        "url": "http://green-agent:9009",
         "protocolVersion": "0.3.0",
-        "url": "http://green-agent:9009/", 
         "skills": [],
-        "capabilities": {},
-        "endpoints": [
-            {
-                "url": "http://green-agent:9009/",
-                "transports": ["http"]
-            }
-        ],
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"]
-    }
-    return jsonify(card)
-'''
+        "capabilities": {"streaming": True},
+        "endpoints": [{"url": "http://green-agent:9009/", "transports": ["http"]}]
+    })
 
-if "/.well-known/agent-card.json" not in content:
-    print("➕ Añadiendo ruta /.well-known/agent-card.json obligatoria...", flush=True)
-    if "app =" in content:
-        parts = content.split("app =", 1)
-        before_app = parts[0] + "app ="
-        after_app = parts[1]
-        
-        if "\n" in after_app:
-            lines = after_app.split("\n", 1)
-            content = before_app + lines[0] + "\n" + agent_card_route + "\n" + lines[1]
-        else:
-            content = before_app + after_app + "\n" + agent_card_route
-    else:
-        content = agent_card_route + "\n\n" + content
-
-# === 3. NUEVA dummy_rpc con LONG-POLLING (Bloqueo) ===
-new_dummy_rpc = r'''
 @app.route('/', methods=['POST', 'GET'])
 def dummy_rpc():
     print("🔒 [BLOQUEO] Cliente conectado. Esperando fin de partida...", flush=True)
     start_time = time.time()
     
     while True:
-        patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl',
-                    'output/results.json', 'output/*.json', '*.json']
+        patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl', 'output/*.json']
         files = []
         for p in patterns:
             files.extend(glob.glob(p))
@@ -118,12 +96,8 @@ def dummy_rpc():
         if files:
             files.sort(key=os.path.getmtime, reverse=True)
             last_file = files[0]
-            age = time.time() - os.path.getmtime(last_file)
-            
-            if age < 600:
-                filename = os.path.basename(last_file)
-                print(f"✅ [FIN] Detectado resultado reciente: {filename} ({age:.1f}s ago)", flush=True)
-                
+            if (time.time() - os.path.getmtime(last_file)) < 600:
+                print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
                 return jsonify({
                     "jsonrpc": "2.0", "id": 1,
                     "result": {
@@ -135,35 +109,35 @@ def dummy_rpc():
                 })
         
         if time.time() - start_time > 1800:
-            print("⏰ Timeout esperando resultados", flush=True)
-            return jsonify({"error": "timeout_waiting_results"}), 504
+            return jsonify({"error": "timeout"}), 504
             
         time.sleep(4)
+# --- INJECTED CODE END ---
 '''
 
-# === 4. Reemplazo de dummy_rpc antigua ===
-if "def dummy_rpc():" in content:
-    print("✅ Reemplazando dummy_rpc antigua...", flush=True)
-    content = content.replace("@app.route('/', methods=['POST', 'GET'])", "# OLD_DUMMY_RPC_DISABLED")
-    content = content.replace('@app.route("/", methods=[\'POST\', \'GET\'])', "# OLD_DUMMY_RPC_DISABLED")
-    content = content.replace("def dummy_rpc():", "def old_dummy_rpc():")
-    
-    if "if __name__" in content:
-        parts = content.split("if __name__")
-        content = "".join(parts[:-1]) + "\n" + new_dummy_rpc + "\n\nif __name__" + parts[-1]
-    else:
-        content += "\n" + new_dummy_rpc
-else:
-    print("⚠️ No encontré dummy_rpc antigua, inyectando nueva al final...")
-    content += "\n" + new_dummy_rpc
+# === 3. DESACTIVAR RUTAS ANTIGUAS (REGEX) ===
+# Comentamos los decoradores de las rutas conflictivas para que Flask no las cargue.
+# Buscamos @app.route('/', ...) y lo comentamos.
+content = re.sub(r"@app\.route\s*\(\s*['\"]/['\"]", "# @app.route('/'", content)
+content = re.sub(r"@app\.route\s*\(\s*['\"]/\.well-known/agent-card\.json['\"]", "# @app.route('/card'", content)
 
-# === 5. Guardar y ejecutar ===
+# === 4. INYECTAR CÓDIGO NUEVO (ANTES DEL MAIN) ===
+# Este es el paso clave: Insertar ANTES de app.run()
+if "if __name__" in content:
+    print("✅ Inyectando antes del bloque main...", flush=True)
+    parts = content.split("if __name__")
+    # Insertamos antes de la última ocurrencia de if __name__
+    content = "".join(parts[:-1]) + "\n" + injected_code + "\n\nif __name__" + parts[-1]
+else:
+    print("⚠️ No encontré main, inyectando al final (puede fallar si hay código bloqueante)...", flush=True)
+    content += "\n" + injected_code
+
+# === 5. GUARDAR Y EJECUTAR ===
 with open(target_file, 'w') as f:
     f.write(content)
 
-print("✅ Green Agent parcheado (Card V2 + Long-Polling). Arrancando...", flush=True)
+print("✅ Servidor parcheado. Arrancando...", flush=True)
 sys.stdout.flush()
-
 os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
 
@@ -398,7 +372,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL B64 FIX V2)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL POSITION FIX)")
 
 if __name__ == "__main__":
     main()

@@ -274,12 +274,13 @@ networks:
     driver: bridge
 """
 
-# 🟢 PLANTILLA PARTICIPANTE (Modo Zombi)
+# 🟢 PLANTILLA PARTICIPANTE (Modo Sleep Infinity - Sintaxis Segura)
+# Usamos corchetes [] para evitar errores de indentación YAML.
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
     container_name: {name}
-    command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
+    entrypoint: ["/bin/sh", "-c", "python -u purple_ai.py --host 0.0.0.0 --port {port} --card-url http://{name}:{port}; echo '✅ FIN. SLEEP...'; sleep infinity"]
     environment:{env}
     depends_on:
       green-agent:

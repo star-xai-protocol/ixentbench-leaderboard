@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import sys
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -37,72 +38,104 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- 🛠️ SCRIPT DE REPARACIÓN (CLONACIÓN SEGURA) ---
-# Este script se ejecuta DENTRO del contenedor.
-# Crea un nuevo archivo 'green_agent_fixed.py' basado en el original.
-FIX_SCRIPT = r"""
-import sys
-import os
-import time
-import glob
+# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO ---
+# Este script de Python contiene TODA la lógica necesaria.
+# 1. Asegura imports.
+# 2. Inyecta la ruta OBLIGATORIA /agent-card.json (Soluciona el 404).
+# 3. Inyecta la ruta de bloqueo / (Soluciona el cierre prematuro).
+# 4. Parchea el archivo en disco y lo ejecuta.
+FIX_SCRIPT_SOURCE = r"""
+import sys, os, re, json, time, glob
 
-print("🔧 [FIX] Iniciando clonación y reparación del servidor...", flush=True)
+print("🔧 [FIX] Iniciando reparación del servidor...", flush=True)
 
-# 1. Localizar archivo original
-original_file = 'src/green_agent.py'
-if not os.path.exists(original_file):
-    original_file = 'green_agent.py'
+target_file = 'src/green_agent.py'
+if not os.path.exists(target_file):
+    target_file = 'green_agent.py'
 
-if not os.path.exists(original_file):
-    print(f"❌ Error: No encuentro {original_file}", flush=True)
+if not os.path.exists(target_file):
+    print(f"❌ Error: No encuentro {target_file}", flush=True)
     sys.exit(1)
 
-print(f"📄 Leyendo original: {original_file}", flush=True)
-with open(original_file, 'r') as f:
+with open(target_file, 'r') as f:
     content = f.read()
 
-# 2. Desactivar la ruta antigua '/' comentando su decorador
-# Esto evita que Flask intente registrar dos funciones para la misma ruta.
-if "@app.route('/', methods=['POST', 'GET'])" in content:
-    content = content.replace("@app.route('/', methods=['POST', 'GET'])", "# ROUTE_DISABLED_BY_FIX")
-    print("✅ Ruta antigua desactivada.", flush=True)
-elif '@app.route("/", methods=[\'POST\', \'GET\'])' in content:
-    content = content.replace('@app.route("/", methods=[\'POST\', \'GET\'])', "# ROUTE_DISABLED_BY_FIX")
-    print("✅ Ruta antigua desactivada (comillas dobles).", flush=True)
-else:
-    print("⚠️ No se encontró la ruta exacta para desactivar. Intentando regex...", flush=True)
-    import re
-    content = re.sub(r"@app\.route\s*\(\s*['\"]/['\"]\s*,", "# @app.route('/',", content)
+# === 1. Añadir imports necesarios ===
+if "import time" not in content:
+    content = "import time, glob, os, json\n" + content
+if "from flask import Flask" in content and "jsonify" not in content:
+    content = content.replace("from flask import Flask", "from flask import Flask, jsonify, request")
 
-# 3. Código de la NUEVA función (Bloqueo / Long Polling)
-# Incluye imports necesarios dentro de la función por seguridad.
-new_logic = r'''
-# --- LOGICA INYECTADA POR FIX ---
-from flask import jsonify
-import time, glob, os
+# === 2. AÑADIR RUTA OBLIGATORIA: agent-card.json ===
+# Esta ruta es vital para que agentbeats-client no de error 404.
+agent_card_route = r'''
+@app.route("/.well-known/agent-card.json")
+def agent_card_fix():
+    card = {
+        "name": "Green Agent (Patched)",
+        "description": "Agente verde parcheado para CapsBench / AgentBeats",
+        "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "capabilities": {},
+        "endpoints": [
+            {
+                "url": "http://green-agent:9009/",
+                "transports": ["http"]
+            }
+        ],
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text"]
+    }
+    return jsonify(card)
+'''
 
+if "/.well-known/agent-card.json" not in content:
+    print("➕ Añadiendo ruta /.well-known/agent-card.json obligatoria...", flush=True)
+    if "app =" in content:
+        # Insertar justo después de crear la app para asegurar que @app existe
+        parts = content.split("app =", 1)
+        # Reconstruimos asegurando que cogemos la linea completa de 'app = ...'
+        before_app = parts[0] + "app ="
+        after_app = parts[1]
+        
+        # Buscar el final de la línea donde se crea app
+        if "\n" in after_app:
+            lines = after_app.split("\n", 1)
+            content = before_app + lines[0] + "\n" + agent_card_route + "\n" + lines[1]
+        else:
+            content = before_app + after_app + "\n" + agent_card_route
+    else:
+        # Fallback: al final de los imports
+        content = agent_card_route + "\n\n" + content
+
+# === 3. NUEVA dummy_rpc con LONG-POLLING (Bloqueo) ===
+# Esto evita que el cliente se cierre antes de tiempo.
+new_dummy_rpc = r'''
 @app.route('/', methods=['POST', 'GET'])
-def blocking_rpc():
+def dummy_rpc():
     print("🔒 [BLOQUEO] Cliente conectado. Esperando fin de partida...", flush=True)
     start_time = time.time()
     
     while True:
-        # Buscar archivos de resultados recientes
-        patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl']
+        # Buscamos en todas las rutas posibles donde el juego deja resultados
+        patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl',
+                    'output/results.json', 'output/*.json', '*.json']
         files = []
         for p in patterns:
             files.extend(glob.glob(p))
             
         if files:
-            files.sort(key=os.path.getmtime)
-            last_file = files[-1]
+            # Ordenar por fecha (el más nuevo primero)
+            files.sort(key=os.path.getmtime, reverse=True)
+            last_file = files[0]
+            age = time.time() - os.path.getmtime(last_file)
             
-            # Si el archivo tiene menos de 10 min, es la partida actual
-            if (time.time() - os.path.getmtime(last_file)) < 600:
+            # Si el archivo es reciente (< 10 min)
+            if age < 600:
                 filename = os.path.basename(last_file)
-                print(f"✅ [FIN] Detectado: {filename}. Liberando cliente.", flush=True)
+                print(f"✅ [FIN] Detectado resultado reciente: {filename} ({age:.1f}s ago)", flush=True)
                 
-                # JSON PLANO (Flattened) para AgentBeats Client
+                # Devolvemos el JSON plano que le gusta a Pydantic
                 return jsonify({
                     "jsonrpc": "2.0", "id": 1,
                     "result": {
@@ -113,36 +146,48 @@ def blocking_rpc():
                     }
                 })
         
-        if time.time() - start_time > 1200:
-            return jsonify({"error": "timeout_waiting_results"})
+        # Timeout de seguridad (30 min)
+        if time.time() - start_time > 1800:
+            print("⏰ Timeout esperando resultados", flush=True)
+            return jsonify({"error": "timeout_waiting_results"}), 504
             
-        time.sleep(5)
-# -------------------------------
+        time.sleep(4)
 '''
 
-# 4. Inyectar la nueva lógica
-# La insertamos justo después de crear la app Flask para asegurar que 'app' existe.
-if "app = Flask(__name__)" in content:
-    parts = content.split("app = Flask(__name__)")
-    new_content = parts[0] + "app = Flask(__name__)\n" + new_logic + "\n" + parts[1]
+# === 4. Reemplazo de dummy_rpc antigua ===
+if "def dummy_rpc():" in content:
+    print("✅ Reemplazando dummy_rpc antigua...", flush=True)
+    # Comentamos el decorador antiguo para desactivar la ruta
+    content = content.replace("@app.route('/', methods=['POST', 'GET'])", "# OLD_DUMMY_RPC_DISABLED")
+    content = content.replace('@app.route("/", methods=[\'POST\', \'GET\'])', "# OLD_DUMMY_RPC_DISABLED")
+    
+    # Renombramos la función antigua para evitar conflictos
+    content = content.replace("def dummy_rpc():", "def old_dummy_rpc():")
+    
+    # Inyectar la nueva función antes del bloque Main
+    if "if __name__" in content:
+        parts = content.split("if __name__")
+        # Insertamos antes del último bloque if __name__ (por si hay varios split)
+        content = "".join(parts[:-1]) + "\n" + new_dummy_rpc + "\n\nif __name__" + parts[-1]
+    else:
+        content += "\n" + new_dummy_rpc
 else:
-    # Fallback: Inyectar después de los imports (asumiendo que 'app' se crea por ahí)
-    print("⚠️ No encontré 'app = Flask', inyectando al final de los imports...", flush=True)
-    new_content = "from flask import Flask, jsonify\n" + content + "\n" + new_logic
+    print("⚠️ No encontré dummy_rpc antigua, inyectando nueva al final...")
+    content += "\n" + new_dummy_rpc
 
-# 5. Guardar en un NUEVO archivo
-fixed_file = 'src/green_agent_fixed.py'
-with open(fixed_file, 'w') as f:
-    f.write(new_content)
+# === 5. Guardar y ejecutar ===
+with open(target_file, 'w') as f:
+    f.write(content)
 
-print(f"✅ Archivo parcheado guardado en: {fixed_file}", flush=True)
-
-# 6. Ejecutar el nuevo archivo
-print("🚀 Arrancando servidor FIXED...", flush=True)
+print("✅ Green Agent completamente parcheado (Card + Long-Polling). Arrancando...", flush=True)
 sys.stdout.flush()
-# Pasamos los mismos argumentos que recibió el script original
-os.execvp("python", ["python", "-u", fixed_file] + sys.argv[1:])
+
+# Ejecutamos el servidor modificado pasando los argumentos recibidos
+os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
+
+# Codificamos el script en Base64 para evitar cualquier error de sintaxis YAML
+FIX_SCRIPT_B64 = base64.b64encode(FIX_SCRIPT_SOURCE.encode('utf-8')).decode('utf-8')
 
 
 def fetch_agent_info(agentbeats_id: str) -> dict:
@@ -209,12 +254,12 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX: Script Python embebido que clona y parchea el servidor.
-    entrypoint:
-      - python
+    # 👇 FIX ROBUSTO: Decodifica el script B64 y lo ejecuta.
+    # Pasa los argumentos de host y puerto al script de Python.
+    entrypoint: 
+      - /bin/sh
       - -c
-      - |
-{fix_script_indented}
+      - "echo {fix_b64} | base64 -d > /tmp/fix_server.py && python /tmp/fix_server.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}"
 
     environment:{green_env}
     healthcheck:
@@ -245,7 +290,7 @@ networks:
     driver: bridge
 """
 
-# 🟢 PARTICIPANTE
+# 🟢 PLANTILLA PARTICIPANTE (Modo Zombi)
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -296,9 +341,6 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
 
     all_services = ["green-agent"] + participant_names
 
-    # Indentamos el script para que encaje en el YAML
-    fix_script_indented = "\n".join(["        " + line for line in FIX_SCRIPT.splitlines()])
-
     return COMPOSE_TEMPLATE.format(
         green_image=green["image"],
         green_port=DEFAULT_PORT,
@@ -306,7 +348,7 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_depends=" []",  
         participant_services=participant_services,
         client_depends=" []", 
-        fix_script_indented=fix_script_indented
+        fix_b64=FIX_SCRIPT_B64  # Inyectamos el script codificado
     )
 
 
@@ -376,7 +418,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL CLONING FIX)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL B64 FIX)")
 
 if __name__ == "__main__":
     main()

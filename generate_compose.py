@@ -55,7 +55,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA ESTABILIZADA
+# 🟢 PLANTILLA CON FIX ROBUSTO (SED)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -63,10 +63,40 @@ services:
     image: {green_image}
     platform: linux/amd64
     container_name: green-agent
-    command: ["--host", "0.0.0.0", "--port", "{green_port}", "--card-url", "http://green-agent:{green_port}"]
+    
+    # 👇👇👇 FIX DEL ERROR 404 (USANDO SED) 👇👇👇
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "🔧 APLICANDO FIX DE AGENT-CARD (vía SED)..."
+        
+        # 1. Crear un archivo temporal con el código del parche
+        cat <<EOF > /tmp/patch.py
+from flask import jsonify
+@app.route('/.well-known/agent-card.json', methods=['GET'])
+def agent_card_fix_injected():
+    return jsonify({{
+        "name": "GreenAgent Fix",
+        "version": "1.0.0",
+        "description": "Fixed Runtime",
+        "url": "http://green-agent:9009/",
+        "protocolVersion": "0.3.0",
+        "capabilities": {{}}
+    }})
+EOF
+
+        # 2. Insertar el parche ANTES del bloque main usando sed
+        # Esto inyecta el contenido de /tmp/patch.py justo antes de la línea "if __name__"
+        sed -i '/if __name__ == "__main__":/e cat /tmp/patch.py' src/green_agent.py
+        
+        echo "🚀 ARRANCANDO SERVIDOR..."
+        exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
+    # 👆👆👆 FIN DEL FIX 👆👆👆
+
     environment:{green_env}
     healthcheck:
-      # Usamos /status porque la tarjeta a veces falla, pero el servidor funciona
+      # Mantenemos /status que es seguro
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
       timeout: 3s
@@ -105,7 +135,7 @@ PARTICIPANT_TEMPLATE = """  {name}:
       green-agent:
         condition: service_healthy
     healthcheck:
-      # "exit 0" significa SIEMPRE SANO. Evita que Docker lo mate si piensa lento.
+      # "exit 0" para que no muera pensando
       test: ["CMD-SHELL", "exit 0"]
       interval: 10s
       timeout: 5s
@@ -139,7 +169,7 @@ def resolve_image(agent: dict, name: str) -> None:
         info = fetch_agent_info(agent["agentbeats_id"])
         agent["image"] = info["docker_image"]
         
-        # 🟢 CAPTURA DEL WEBHOOK ID (FIX CRÍTICO)
+        # 🟢 CAPTURA DEL WEBHOOK ID
         if "id" in info:
             agent["webhook_id"] = info["id"]
         
@@ -208,7 +238,6 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_image=green["image"],
         green_port=DEFAULT_PORT,
         green_env=format_env_vars(green.get("env", {})),
-        # 🟢 FIX DEL CICLO DE DEPENDENCIA
         green_depends=" []",  
         participant_services=participant_services,
         client_depends=format_depends_on(all_services)
@@ -294,7 +323,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (CLEAN VERSION)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL VERSION)")
 
 if __name__ == "__main__":
     main()

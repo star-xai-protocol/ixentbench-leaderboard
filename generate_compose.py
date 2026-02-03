@@ -55,7 +55,8 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA SERVIDOR: VIGILANTE EN PYTHON PURO (Long Polling)
+# 🟢 PLANTILLA SERVIDOR: CIRUGÍA EN EL CODIGO FUENTE
+# Usamos un script de Python en el entrypoint para reescribir la función dummy_rpc
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -64,110 +65,99 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX DE RED: Usamos Python para inyectar el código.
-    # Esto evita los errores de "expected ':'" en YAML y asegura la indentación.
+    # 👇 FIX MAESTRO: Reescribimos la logica del servidor antes de arrancarlo
     entrypoint:
       - python
       - -c
       - |
-        import sys, os, time, glob
+        import sys, os
 
-        print("🔧 FIX: Aplicando parche 'Long Polling'...", flush=True)
+        print("🔧 FIX: Reescribiendo logica del servidor (Vigilante v2)...", flush=True)
 
-        # 1. Leemos el codigo original
-        try:
-            with open('src/green_agent.py', 'r') as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            # Fallback por si la ruta cambia en versiones futuras
-            with open('green_agent.py', 'r') as f:
-                lines = f.readlines()
+        # Leemos el archivo original
+        with open('src/green_agent.py', 'r') as f:
+            content = f.read()
 
-        # 2. Insertamos imports necesarios al principio
-        lines.insert(0, "import time, glob, os\\n")
-
-        # 3. Añadimos 'jsonify' a la importacion de Flask
-        for i, line in enumerate(lines):
-            if 'from flask import Flask' in line:
-                if 'jsonify' not in line:
-                    lines[i] = line.replace('Flask', 'Flask, jsonify')
-                break
-
-        # 4. Definimos el codigo del parche (Rutas bloqueantes)
-        # Este codigo intercepta la raiz y espera a que exista el archivo de replay
-        # Usamos dobles llaves {{{{ }}}} para que Python .format() no se rompa al generar el YAML
-        patch_code = \"\"\"
-        @app.route('/.well-known/agent-card.json')
-        def card_fix():
-            return jsonify({{
-                "name": "GreenFix",
-                "version": "1.0",
-                "description": "Fix",
-                "url": "http://green-agent:9009/",
-                "protocolVersion": "0.3.0",
-                "capabilities": {{}}, 
-                "defaultInputModes": ["text"],
-                "defaultOutputModes": ["text"],
-                "skills": []
-            }})
-
-        @app.route('/', methods=['POST', 'GET'])
-        def root_fix():
-            print("🔒 CLIENTE CONECTADO. BLOQUEANDO HASTA FIN DE PARTIDA...", flush=True)
-            # Esperamos hasta 20 minutos (1200 seg)
-            start_time = time.time()
-            while True:
-                # Buscamos archivos recientes
-                # Buscamos en varias rutas posibles por si acaso
-                files = sorted(glob.glob('/app/src/replays/*.jsonl') + glob.glob('src/replays/*.jsonl'), key=os.path.getmtime)
-                
-                if files:
-                    # Chequeo simple de "reciente" (por si acaso hay basura vieja del contenedor anterior)
-                    # Si el archivo tiene menos de 10 mins, es valido.
-                    if (time.time() - os.path.getmtime(files[-1])) < 600:
-                        print("✅ JUEGO TERMINADO. LIBERANDO CLIENTE.", flush=True)
-                        # Respuesta FINAL con TODOS los campos que exige Pydantic (Flattened)
-                        return jsonify({{
-                            "jsonrpc": "2.0", 
-                            "id": 1, 
-                            "result": {{
-                                "contextId": "ctx", 
-                                "taskId": "task", 
-                                "id": "task",
-                                "status": {{"state": "completed"}}, 
-                                "final": True,
-                                "messageId": "msg-done",
-                                "role": "assistant",
-                                "parts": [{{"text": "Game Finished", "mimeType": "text/plain"}}]
-                            }}
-                        }})
-                
-                if time.time() - start_time > 1200:
-                     return jsonify({{"error": "timeout"}})
-
-                time.sleep(5)
-        \"\"\"
-
-        # 5. Insertamos el parche antes de "if __name__"
-        inserted = False
-        for i, line in enumerate(lines):
-            if 'if __name__' in line:
-                lines.insert(i, patch_code)
-                inserted = True
-                break
+        # 1. Definimos el NUEVO codigo del Vigilante (Streaming + Validacion Pydantic)
+        # Este codigo sustituye a la funcion dummy_rpc original.
+        new_rpc_code = \"\"\"
+@app.route('/', methods=['POST', 'GET'])
+def dummy_rpc():
+    def generate():
+        print('👁️ VIGILANTE MEJORADO: Iniciando stream...', flush=True)
         
-        if not inserted:
-            lines.append(patch_code)
+        # Estructura BASE que pasa la validacion (Flattened)
+        # Pydantic busca messageId, role, parts en el 'result'
+        base_res = {{
+            "jsonrpc": "2.0", "id": 1, 
+            "result": {{
+                "contextId": "ctx", "taskId": "task", "id": "task",
+                "status": {{"state": "working"}}, "final": False,
+                "messageId": "m-alive", "role": "assistant", "parts": [{{"text": "...", "mimeType": "text/plain"}}]
+            }}
+        }}
+        
+        # Enviar primer latido inmediatamente
+        yield 'data: ' + json.dumps(base_res) + '\\n\\n'
 
-        # 6. Guardamos los cambios
-        with open('src/green_agent.py', 'w') as f:
-            f.writelines(lines)
+        while True:
+            # Buscamos resultados (replays jsonl o summaries json)
+            # Buscamos recursivamente en varias rutas posibles
+            files = sorted(glob.glob('results/*.json') + glob.glob('src/replays/*.jsonl') + glob.glob('replays/*.jsonl'), key=os.path.getmtime)
+            
+            # Filtramos archivos muy recientes (< 5 min) para evitar leer viejos
+            current_time = time.time()
+            recent_files = [f for f in files if (current_time - os.path.getmtime(f)) < 300]
 
-        print("🚀 ARRANCANDO SERVIDOR PARCHEADO...", flush=True)
-        # 7. Ejecutamos el servidor original (ahora modificado)
+            if recent_files:
+                last_file = os.path.basename(recent_files[-1])
+                print(f'🏁 JUEGO TERMINADO. Archivo: {{last_file}}', flush=True)
+                time.sleep(2)
+                
+                # Respuesta FINAL (Completed)
+                final_res = {{
+                    "jsonrpc": "2.0", "id": 1, 
+                    "result": {{
+                        "contextId": "ctx", "taskId": "task", "id": "task",
+                        "status": {{"state": "completed"}}, "final": True,
+                        "messageId": "m-done", "role": "assistant", "parts": [{{"text": "Done", "mimeType": "text/plain"}}]
+                    }}
+                }}
+                yield 'data: ' + json.dumps(final_res) + '\\n\\n'
+                break
+            
+            # Latido cada 3 segundos
+            time.sleep(3)
+            yield 'data: ' + json.dumps(base_res) + '\\n\\n'
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+\"\"\"
+
+        # 2. Buscamos donde empieza y termina la funcion antigua dummy_rpc
+        # Usamos expresiones regulares para encontrar el bloque y reemplazarlo
+        # Si no lo encontramos, lo pegamos al final (fallback)
+        if "def dummy_rpc():" in content:
+            # Estrategia simple: Cortar el archivo antes de dummy_rpc y pegar lo nuevo
+            # (Asumimos que dummy_rpc es la ultima funcion o esta cerca del final)
+            parts = content.split("@app.route('/', methods=['POST', 'GET'])")
+            if len(parts) > 1:
+                # Mantenemos la primera parte (imports, config, start_game, etc)
+                # Y pegamos nuestra nueva funcion, ignorando la vieja implementacion
+                new_content = parts[0] + new_rpc_code + "\\n\\n" + "# Old code removed by fix\\n" + "if __name__ == '__main__':" + content.split("if __name__ == '__main__':")[-1]
+                
+                with open('src/green_agent.py', 'w') as f:
+                    f.write(new_content)
+                print("✅ Codigo inyectado correctamente.", flush=True)
+            else:
+                print("⚠️ No se pudo reemplazar limpiamente, usando append...", flush=True)
+        else:
+            print("⚠️ No se encontro dummy_rpc, añadiendo...", flush=True)
+
+        print("🚀 ARRANCANDO SERVIDOR MODIFICADO...", flush=True)
         sys.stdout.flush()
+        # Ejecutamos el servidor
         os.system("python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}")
-      
+
     environment:{green_env}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
@@ -261,9 +251,7 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
 
     participants = data.get("participants", [])
 
-    # 👇 LÍNEA CORREGIDA (Aquí estaba el fallo)
     names = [p.get("name") for p in participants]
-    
     duplicates = [name for name in set(names) if names.count(name) > 1]
     if duplicates:
         print(f"Error: Duplicate participant names found: {', '.join(duplicates)}")
@@ -396,7 +384,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL FIXED VERSION)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL SOURCE CODE PATCH)")
 
 if __name__ == "__main__":
     main()

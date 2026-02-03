@@ -143,8 +143,7 @@ def dummy_rpc():
                                         "name": os.path.basename(last_file)
                                     }
                                 }
-                            ],
-                            "artifacts": []  # Necesario para evitar TypeError en bucles del cliente
+                            ]
                         }
                     }
                     yield "data: " + json.dumps(final_msg) + "\n\n"

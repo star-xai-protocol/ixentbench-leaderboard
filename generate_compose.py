@@ -38,10 +38,8 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO (FIX_SCRIPT_V4) ---
-# 1. Desactiva rutas antiguas usando Regex (robusto).
-# 2. Inyecta rutas nuevas (Card + RPC) ANTES del main (evita código muerto).
-# 3. Asegura imports.
+# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO (V5 - SCHEMA FIX) ---
+# Se ejecuta DENTRO del contenedor.
 FIX_SCRIPT_SOURCE = r"""
 import sys, os, re, json, time, glob
 
@@ -66,20 +64,24 @@ if "from flask import Flask" in content:
 else:
     content = "from flask import Flask, jsonify, request\n" + content
 
-# === 2. CÓDIGO NUEVO (CARD + RPC) ===
+# === 2. CÓDIGO NUEVO (CARD COMPLETA + RPC) ===
 injected_code = r'''
 # --- INJECTED CODE START ---
 @app.route("/.well-known/agent-card.json", methods=["GET"])
 def agent_card_fix():
+    # Estructura COMPLETA para pasar validación Pydantic estricta
     return jsonify({
         "schema_version": "a2a-v1",
         "name": "green-agent-patched",
         "description": "Patched for AgentBeats",
         "url": "http://green-agent:9009",
+        "version": "1.0.0",                 # CAMPO AÑADIDO
         "protocolVersion": "0.3.0",
         "skills": [],
         "capabilities": {"streaming": True},
-        "endpoints": [{"url": "http://green-agent:9009/", "transports": ["http"]}]
+        "endpoints": [{"url": "http://green-agent:9009/", "transports": ["http"]}],
+        "defaultInputModes": ["text"],      # CAMPO AÑADIDO
+        "defaultOutputModes": ["text"]      # CAMPO AÑADIDO
     })
 
 @app.route('/', methods=['POST', 'GET'])
@@ -96,6 +98,7 @@ def dummy_rpc():
         if files:
             files.sort(key=os.path.getmtime, reverse=True)
             last_file = files[0]
+            # Si el archivo tiene menos de 10 min
             if (time.time() - os.path.getmtime(last_file)) < 600:
                 print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
                 return jsonify({
@@ -116,27 +119,21 @@ def dummy_rpc():
 '''
 
 # === 3. DESACTIVAR RUTAS ANTIGUAS (REGEX) ===
-# Comentamos los decoradores de las rutas conflictivas para que Flask no las cargue.
-# Buscamos @app.route('/', ...) y lo comentamos.
 content = re.sub(r"@app\.route\s*\(\s*['\"]/['\"]", "# @app.route('/'", content)
 content = re.sub(r"@app\.route\s*\(\s*['\"]/\.well-known/agent-card\.json['\"]", "# @app.route('/card'", content)
 
-# === 4. INYECTAR CÓDIGO NUEVO (ANTES DEL MAIN) ===
-# Este es el paso clave: Insertar ANTES de app.run()
+# === 4. INYECTAR CÓDIGO NUEVO ===
 if "if __name__" in content:
-    print("✅ Inyectando antes del bloque main...", flush=True)
     parts = content.split("if __name__")
-    # Insertamos antes de la última ocurrencia de if __name__
     content = "".join(parts[:-1]) + "\n" + injected_code + "\n\nif __name__" + parts[-1]
 else:
-    print("⚠️ No encontré main, inyectando al final (puede fallar si hay código bloqueante)...", flush=True)
     content += "\n" + injected_code
 
 # === 5. GUARDAR Y EJECUTAR ===
 with open(target_file, 'w') as f:
     f.write(content)
 
-print("✅ Servidor parcheado. Arrancando...", flush=True)
+print("✅ Servidor parcheado (Schema V5). Arrancando...", flush=True)
 sys.stdout.flush()
 os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
@@ -372,7 +369,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL POSITION FIX)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (SCHEMA FIXED)")
 
 if __name__ == "__main__":
     main()

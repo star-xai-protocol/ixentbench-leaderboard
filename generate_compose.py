@@ -38,61 +38,63 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- PARCHE DEL SERVIDOR (EL "VIGILANTE" ROBUSTO) ---
-# Se ejecuta DENTRO del contenedor. Modifica green_agent.py en memoria/disco.
-SERVER_PATCH_SOURCE = r"""
+# --- 🛠️ CÓDIGO DEL WRAPPER (EL SALVAVIDAS) ---
+# Este script Python se inyectará en el contenedor.
+# NO modifica archivos. Importa el servidor y lo arregla en memoria ("Monkey Patching").
+WRAPPER_SOURCE = r"""
 import sys
 import os
 import time
 import glob
-import re
+import logging
+from flask import jsonify
 
-print("🔧 [PATCH] Iniciando inyeccion de Long Polling...", flush=True)
+print("🔧 [WRAPPER] Iniciando arranque seguro...", flush=True)
 
-target_file = 'src/green_agent.py'
-if not os.path.exists(target_file):
-    target_file = 'green_agent.py'
+# 1. Añadir 'src' al path para poder importar green_agent
+# Asumimos que estamos en /app y el codigo esta en /app/src
+sys.path.append(os.path.join(os.getcwd(), 'src'))
 
-print(f"📄 Archivo objetivo: {target_file}", flush=True)
+# 2. Importar el servidor original
+# Esto carga todas las rutas originales (incluida agent-card) correctamente.
+try:
+    import green_agent
+    print("✅ [WRAPPER] Módulo green_agent importado correctamente.", flush=True)
+except ImportError as e:
+    print(f"❌ [WRAPPER] Fallo al importar green_agent: {e}", flush=True)
+    # Intento de fallback por si la estructura de carpetas es distinta
+    sys.path.append(os.getcwd())
+    try:
+        import green_agent
+        print("✅ [WRAPPER] Módulo green_agent importado (fallback path).", flush=True)
+    except ImportError:
+        print("❌ [WRAPPER] Imposible cargar el servidor. Abortando.", flush=True)
+        sys.exit(1)
 
-with open(target_file, 'r') as f:
-    content = f.read()
-
-# 1. Asegurar imports necesarios al principio
-if "import time" not in content:
-    content = "import time, glob, os\n" + content
-if "from flask import Flask" in content and "jsonify" not in content:
-    content = content.replace("from flask import Flask", "from flask import Flask, jsonify")
-
-# 2. Desactivar la ruta antigua dummy_rpc comentando sus decoradores
-# Esto evita conflictos de rutas duplicadas en Flask.
-content = content.replace("@app.route('/',", "# @app.route('/',")
-content = content.replace("@app.route(\"/\",", "# @app.route(\"/\",")
-
-# 3. Código de la NUEVA función de bloqueo (Long Polling)
-new_logic = r'''
-@app.route('/', methods=['POST', 'GET'])
+# 3. Definir la función de Bloqueo (Long Polling)
+# Esta funcion sustituirá a la 'dummy_rpc' original.
 def blocking_rpc():
     print("🔒 [BLOQUEO] Cliente conectado. Esperando fin de partida...", flush=True)
     start_time = time.time()
     
     while True:
-        # Buscar archivos de resultados recientes (.jsonl o .json)
+        # Buscar resultados recientes
+        # Buscamos en todas las ubicaciones posibles
         patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl']
         files = []
         for p in patterns:
             files.extend(glob.glob(p))
-            
+        
         if files:
             files.sort(key=os.path.getmtime)
             last_file = files[-1]
             
-            # Si el archivo tiene menos de 10 min (600s), es la partida actual
+            # Si el archivo es reciente (< 10 min), es el nuestro
             if (time.time() - os.path.getmtime(last_file)) < 600:
                 filename = os.path.basename(last_file)
-                print(f"✅ [FIN] Detectado: {filename}. Liberando cliente.", flush=True)
+                print(f"✅ [FIN] Detectado: {filename}. Enviando respuesta.", flush=True)
                 
-                # JSON Plano para pasar validación estricta
+                # JSON PLANO (Flattened) para pasar la validación estricta del cliente
                 return jsonify({
                     "jsonrpc": "2.0", "id": 1,
                     "result": {
@@ -108,54 +110,26 @@ def blocking_rpc():
             return jsonify({"error": "timeout_waiting_results"})
             
         time.sleep(5)
-'''
 
-# 4. INYECCIÓN SEGURA: Insertar después de crear la 'app'
-# No tocamos el final del archivo (if __name__...) para evitar romper el arranque.
-if "app = Flask(__name__)" in content:
-    parts = content.split("app = Flask(__name__)")
-    # Reconstruimos: Todo lo anterior + app=Flask + NUESTRA LOGICA + Todo lo posterior
-    new_content = parts[0] + "app = Flask(__name__)\n" + new_logic + "\n" + parts[1]
-    
-    with open(target_file, 'w') as f:
-        f.write(new_content)
-    print("✅ [PATCH] Inyeccion realizada correctamente.", flush=True)
+# 4. APLICAR EL PARCHE (Monkey Patch)
+# Sobreescribimos la función asociada al endpoint 'dummy_rpc'
+if 'dummy_rpc' in green_agent.app.view_functions:
+    green_agent.app.view_functions['dummy_rpc'] = blocking_rpc
+    print("✅ [WRAPPER] Función dummy_rpc parcheada en memoria.", flush=True)
 else:
-    print("❌ [PATCH] No se encontró 'app = Flask(__name__)', no se pudo parchear.", flush=True)
-    sys.exit(1)
+    print("⚠️ [WRAPPER] No se encontró dummy_rpc. Intentando forzar la ruta...", flush=True)
+    # Si por alguna razón el nombre interno es distinto, forzamos la ruta raíz
+    green_agent.app.add_url_rule('/', 'blocking_rpc_force', blocking_rpc, methods=['POST', 'GET'])
 
-# 5. Ejecutar el servidor
-print("🚀 [PATCH] Arrancando servidor...", flush=True)
-sys.stdout.flush()
-os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
+# 5. EJECUTAR EL SERVIDOR
+# Usamos las variables del modulo original si existen, o defaults
+print("🚀 [WRAPPER] Arrancando servidor Flask...", flush=True)
+# Desactivamos debug/reloader para evitar procesos hijos extraños en Docker
+green_agent.app.run(host='0.0.0.0', port=9009, debug=False, use_reloader=False)
 """
 
-# Codificación Base64 para el YAML
-PATCH_B64 = base64.b64encode(SERVER_PATCH_SOURCE.encode('utf-8')).decode('utf-8')
-
-
-def resolve_image(agent: dict, name: str) -> None:
-    has_image = "image" in agent
-    has_id = "agentbeats_id" in agent
-
-    if has_image and has_id:
-        print(f"Error: {name} has both 'image' and 'agentbeats_id'")
-        sys.exit(1)
-    elif has_image:
-        if os.environ.get("GITHUB_ACTIONS"):
-            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions")
-            sys.exit(1)
-        print(f"Using {name} image: {agent['image']}")
-    elif has_id:
-        info = fetch_agent_info(agent["agentbeats_id"])
-        agent["image"] = info["docker_image"]
-        # CAPTURAMOS EL ID DEL WEBHOOK
-        if "id" in info:
-            agent["webhook_id"] = info["id"]
-        print(f"Resolved {name} image: {agent['image']}")
-    else:
-        print(f"Error: {name} must have 'image' or 'agentbeats_id'")
-        sys.exit(1)
+# Codificamos el wrapper en Base64 para inyección segura en YAML
+WRAPPER_B64 = base64.b64encode(WRAPPER_SOURCE.encode('utf-8')).decode('utf-8')
 
 
 def fetch_agent_info(agentbeats_id: str) -> dict:
@@ -190,6 +164,29 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
     return data
 
 
+def resolve_image(agent: dict, name: str) -> None:
+    has_image = "image" in agent
+    has_id = "agentbeats_id" in agent
+
+    if has_image and has_id:
+        print(f"Error: {name} has both 'image' and 'agentbeats_id'")
+        sys.exit(1)
+    elif has_image:
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions")
+            sys.exit(1)
+        print(f"Using {name} image: {agent['image']}")
+    elif has_id:
+        info = fetch_agent_info(agent["agentbeats_id"])
+        agent["image"] = info["docker_image"]
+        if "id" in info:
+            agent["webhook_id"] = info["id"]
+        print(f"Resolved {name} image: {agent['image']}")
+    else:
+        print(f"Error: {name} must have 'image' or 'agentbeats_id'")
+        sys.exit(1)
+
+
 # 🟢 PLANTILLA SERVIDOR
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
@@ -199,11 +196,12 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX: Decodificar y ejecutar el parche.
+    # 👇 FIX: Usamos el Wrapper. 
+    # Crea /tmp/wrapper.py desde base64 y lo ejecuta.
     entrypoint: 
       - /bin/sh
       - -c
-      - "echo {patch_b64} | base64 -d > /tmp/runner.py && python /tmp/runner.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}"
+      - "echo {wrapper_b64} | base64 -d > /tmp/wrapper.py && python /tmp/wrapper.py"
 
     environment:{green_env}
     healthcheck:
@@ -234,7 +232,7 @@ networks:
     driver: bridge
 """
 
-# 🟢 PLANTILLA PARTICIPANTE (Modo Zombi)
+# 🟢 PARTICIPANTE
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -291,8 +289,8 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_env=format_env_vars(green.get("env", {})),
         green_depends=" []",  
         participant_services=participant_services,
-        client_depends=" []", # Romper dependencia circular en el cliente
-        patch_b64=PATCH_B64
+        client_depends=" []", 
+        wrapper_b64=WRAPPER_B64
     )
 
 
@@ -362,7 +360,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL ROBUST INJECTION)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL SAFE WRAPPER)")
 
 if __name__ == "__main__":
     main()

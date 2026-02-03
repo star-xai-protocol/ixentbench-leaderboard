@@ -55,7 +55,8 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA LIMPIA (SIN INYECCIONES QUE ROMPAN YAML)
+# 🟢 PLANTILLA MAESTRA
+# Usamos dobles llaves {{ }} en el JSON inyectado para evitar el KeyError de Python
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -63,10 +64,27 @@ services:
     image: {green_image}
     platform: linux/amd64
     container_name: green-agent
-    command: ["--host", "0.0.0.0", "--port", "{green_port}", "--card-url", "http://green-agent:{green_port}"]
+    
+    # 👇👇👇 FIX DEL ERROR 404 (Blindado contra errores de Python) 👇👇👇
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "🔧 INYECTANDO RUTA AGENT-CARD..."
+        # 1. Añadimos 'jsonify' a los imports
+        sed -i 's/from flask import Flask/from flask import Flask, jsonify/' src/green_agent.py
+        
+        # 2. Inyectamos la ruta faltante antes del arranque.
+        # ATENCIÓN: Las dobles llaves {{{{ }}}} son para que Python no se confunda.
+        sed -i '/if __name__ == "__main__":/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}}}})' src/green_agent.py
+        
+        echo "🚀 ARRANCANDO SERVIDOR..."
+        exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
+    # 👆👆👆 FIN DEL FIX 👆👆👆
+
     environment:{green_env}
     healthcheck:
-      # Usamos /status que es seguro y no da error 404
+      # Mantenemos /status que es seguro
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
       timeout: 3s
@@ -105,7 +123,7 @@ PARTICIPANT_TEMPLATE = """  {name}:
       green-agent:
         condition: service_healthy
     healthcheck:
-      # ESTO ES LO QUE EVITA QUE MUERA SI PIENSA MUCHO:
+      # ESTO EVITA QUE MUERA SI PIENSA MUCHO:
       test: ["CMD-SHELL", "exit 0"]
       interval: 10s
       timeout: 5s
@@ -294,7 +312,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH}")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (ROBUST FIX VERSION)")
 
 if __name__ == "__main__":
     main()

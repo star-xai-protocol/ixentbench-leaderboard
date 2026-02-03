@@ -101,7 +101,8 @@ def dummy_rpc():
                 "contextId": "ctx", "taskId": "task", "id": "task",
                 "status": {"state": "working"}, "final": False,
                 "messageId": "msg-alive", "role": "assistant",
-                "parts": [{"text": "Game running...", "mimeType": "text/plain"}]
+                "parts": [{"text": "Game running...", "mimeType": "text/plain"}],
+                "artifacts": []
             }
         }
         # Formato SSE: "data: <json>\n\n"
@@ -131,7 +132,8 @@ def dummy_rpc():
                             "contextId": "ctx", "taskId": "task", "id": "task",
                             "status": {"state": "completed"}, "final": True,
                             "messageId": "msg-done", "role": "assistant",
-                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}]
+                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}],
+                            "artifacts": []
                         }
                     }
                     yield "data: " + json.dumps(final_msg) + "\n\n"

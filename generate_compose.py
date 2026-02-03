@@ -4,7 +4,6 @@ import argparse
 import os
 import re
 import sys
-import base64
 from pathlib import Path
 from typing import Any
 
@@ -38,63 +37,57 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- 🛠️ CÓDIGO DEL WRAPPER (EL SALVAVIDAS) ---
-# Este script Python se inyectará en el contenedor.
-# NO modifica archivos. Importa el servidor y lo arregla en memoria ("Monkey Patching").
-WRAPPER_SOURCE = r"""
-import sys
-import os
-import time
-import glob
-import logging
-from flask import jsonify
+# --- 🛠️ EL SCRIPT DE REPARACIÓN (SIMPLE Y DIRECTO) ---
+# Este script de Python se ejecutará DENTRO del contenedor antes de arrancar el servidor.
+# Su único trabajo es buscar la función 'dummy_rpc' mala y cambiarla por la buena.
+FIX_SCRIPT = r"""
+import sys, os, re
 
-print("🔧 [WRAPPER] Iniciando arranque seguro...", flush=True)
+print("🔧 [FIX] Iniciando reparación del servidor...", flush=True)
 
-# 1. Añadir 'src' al path para poder importar green_agent
-# Asumimos que estamos en /app y el codigo esta en /app/src
-sys.path.append(os.path.join(os.getcwd(), 'src'))
+target_file = 'src/green_agent.py'
+if not os.path.exists(target_file): target_file = 'green_agent.py'
 
-# 2. Importar el servidor original
-# Esto carga todas las rutas originales (incluida agent-card) correctamente.
-try:
-    import green_agent
-    print("✅ [WRAPPER] Módulo green_agent importado correctamente.", flush=True)
-except ImportError as e:
-    print(f"❌ [WRAPPER] Fallo al importar green_agent: {e}", flush=True)
-    # Intento de fallback por si la estructura de carpetas es distinta
-    sys.path.append(os.getcwd())
-    try:
-        import green_agent
-        print("✅ [WRAPPER] Módulo green_agent importado (fallback path).", flush=True)
-    except ImportError:
-        print("❌ [WRAPPER] Imposible cargar el servidor. Abortando.", flush=True)
-        sys.exit(1)
+if not os.path.exists(target_file):
+    print(f"❌ Error: No encuentro {target_file}", flush=True)
+    sys.exit(1)
 
-# 3. Definir la función de Bloqueo (Long Polling)
-# Esta funcion sustituirá a la 'dummy_rpc' original.
-def blocking_rpc():
+with open(target_file, 'r') as f:
+    content = f.read()
+
+# 1. Verificar si ya tiene imports necesarios
+if "import time" not in content:
+    content = "import time, glob, os\n" + content
+# Asegurar que jsonify está disponible
+if "from flask import Flask" in content and "jsonify" not in content:
+    content = content.replace("from flask import Flask", "from flask import Flask, jsonify")
+
+# 2. DEFINIR LA NUEVA LÓGICA (LONG POLLING)
+# Esta función reemplazará a la original.
+# Obliga al cliente a esperar hasta que aparezca el archivo de resultados.
+new_dummy_rpc = r'''
+@app.route('/', methods=['POST', 'GET'])
+def dummy_rpc():
     print("🔒 [BLOQUEO] Cliente conectado. Esperando fin de partida...", flush=True)
+    import time, glob, os
     start_time = time.time()
     
     while True:
-        # Buscar resultados recientes
-        # Buscamos en todas las ubicaciones posibles
+        # Buscar archivos de resultados recientes
         patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl']
         files = []
         for p in patterns:
             files.extend(glob.glob(p))
-        
+            
         if files:
             files.sort(key=os.path.getmtime)
             last_file = files[-1]
             
             # Si el archivo es reciente (< 10 min), es el nuestro
             if (time.time() - os.path.getmtime(last_file)) < 600:
-                filename = os.path.basename(last_file)
-                print(f"✅ [FIN] Detectado: {filename}. Enviando respuesta.", flush=True)
+                print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}. Liberando cliente.", flush=True)
                 
-                # JSON PLANO (Flattened) para pasar la validación estricta del cliente
+                # Respuesta JSON Plano (Compatible con Pydantic)
                 return jsonify({
                     "jsonrpc": "2.0", "id": 1,
                     "result": {
@@ -110,26 +103,41 @@ def blocking_rpc():
             return jsonify({"error": "timeout_waiting_results"})
             
         time.sleep(5)
+'''
 
-# 4. APLICAR EL PARCHE (Monkey Patch)
-# Sobreescribimos la función asociada al endpoint 'dummy_rpc'
-if 'dummy_rpc' in green_agent.app.view_functions:
-    green_agent.app.view_functions['dummy_rpc'] = blocking_rpc
-    print("✅ [WRAPPER] Función dummy_rpc parcheada en memoria.", flush=True)
+# 3. REEMPLAZO QUIRÚRGICO
+# Buscamos la definición original y la comentamos para desactivarla.
+if "def dummy_rpc():" in content:
+    print("✅ Función dummy_rpc encontrada. Reemplazando...", flush=True)
+    
+    # Desactivar la ruta antigua
+    content = content.replace("@app.route('/', methods=['POST', 'GET'])", "# OLD_ROUTE_DISABLED")
+    content = content.replace("def dummy_rpc():", "def old_dummy_rpc_disabled():")
+    
+    # Inyectar la nueva función antes del bloque Main
+    if "if __name__" in content:
+        parts = content.split("if __name__")
+        content = parts[0] + "\n" + new_dummy_rpc + "\n\nif __name__" + parts[1]
+    else:
+        content += "\n" + new_dummy_rpc
+        
+    # Guardar cambios
+    with open(target_file, 'w') as f:
+        f.write(content)
+    print("✅ Archivo parcheado exitosamente.", flush=True)
+
 else:
-    print("⚠️ [WRAPPER] No se encontró dummy_rpc. Intentando forzar la ruta...", flush=True)
-    # Si por alguna razón el nombre interno es distinto, forzamos la ruta raíz
-    green_agent.app.add_url_rule('/', 'blocking_rpc_force', blocking_rpc, methods=['POST', 'GET'])
+    print("⚠️ No encontré dummy_rpc. Inyectando al final...", flush=True)
+    content += "\n" + new_dummy_rpc
+    with open(target_file, 'w') as f:
+        f.write(content)
 
-# 5. EJECUTAR EL SERVIDOR
-# Usamos las variables del modulo original si existen, o defaults
-print("🚀 [WRAPPER] Arrancando servidor Flask...", flush=True)
-# Desactivamos debug/reloader para evitar procesos hijos extraños en Docker
-green_agent.app.run(host='0.0.0.0', port=9009, debug=False, use_reloader=False)
+# 4. EJECUTAR EL SERVIDOR
+print("🚀 Arrancando servidor parcheado...", flush=True)
+sys.stdout.flush()
+# Ejecutamos el archivo modificado usando python
+os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
-
-# Codificamos el wrapper en Base64 para inyección segura en YAML
-WRAPPER_B64 = base64.b64encode(WRAPPER_SOURCE.encode('utf-8')).decode('utf-8')
 
 
 def fetch_agent_info(agentbeats_id: str) -> dict:
@@ -141,27 +149,6 @@ def fetch_agent_info(agentbeats_id: str) -> dict:
     except Exception as e:
         print(f"Error: Failed to fetch agent {agentbeats_id}: {e}")
         sys.exit(1)
-
-
-def parse_scenario(scenario_path: Path) -> dict[str, Any]:
-    toml_data = scenario_path.read_text()
-    data = tomli.loads(toml_data)
-
-    green = data.get("green_agent", {})
-    resolve_image(green, "green_agent")
-
-    participants = data.get("participants", [])
-    names = [p.get("name") for p in participants]
-    duplicates = [name for name in set(names) if names.count(name) > 1]
-    if duplicates:
-        print(f"Error: Duplicate participant names: {duplicates}")
-        sys.exit(1)
-
-    for participant in participants:
-        name = participant.get("name", "unknown")
-        resolve_image(participant, f"participant '{name}'")
-
-    return data
 
 
 def resolve_image(agent: dict, name: str) -> None:
@@ -187,7 +174,30 @@ def resolve_image(agent: dict, name: str) -> None:
         sys.exit(1)
 
 
+def parse_scenario(scenario_path: Path) -> dict[str, Any]:
+    toml_data = scenario_path.read_text()
+    data = tomli.loads(toml_data)
+
+    green = data.get("green_agent", {})
+    resolve_image(green, "green_agent")
+
+    participants = data.get("participants", [])
+    names = [p.get("name") for p in participants]
+    duplicates = [name for name in set(names) if names.count(name) > 1]
+    if duplicates:
+        print(f"Error: Duplicate participant names: {duplicates}")
+        sys.exit(1)
+
+    for participant in participants:
+        name = participant.get("name", "unknown")
+        resolve_image(participant, f"participant '{name}'")
+
+    return data
+
+
 # 🟢 PLANTILLA SERVIDOR
+# Usamos un entrypoint simple en Python que escribe el script de reparación y lo ejecuta.
+# Esto evita problemas de sintaxis YAML complejos.
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -196,12 +206,13 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX: Usamos el Wrapper. 
-    # Crea /tmp/wrapper.py desde base64 y lo ejecuta.
-    entrypoint: 
-      - /bin/sh
+    # 👇 FIX SIMPLE: Escribir el script de reparación en disco y ejecutarlo con Python.
+    # Usamos dobles corchetes para escapar el string multi-linea en el template.
+    entrypoint:
+      - python
       - -c
-      - "echo {wrapper_b64} | base64 -d > /tmp/wrapper.py && python /tmp/wrapper.py"
+      - |
+{fix_script_indented}
 
     environment:{green_env}
     healthcheck:
@@ -232,7 +243,7 @@ networks:
     driver: bridge
 """
 
-# 🟢 PARTICIPANTE
+# 🟢 PLANTILLA PARTICIPANTE (Modo Zombi)
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -283,6 +294,10 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
 
     all_services = ["green-agent"] + participant_names
 
+    # Indentamos el script de fix para que encaje en el YAML
+    # Añadimos 8 espacios a cada línea del script
+    fix_script_indented = "\n".join(["        " + line for line in FIX_SCRIPT.splitlines()])
+
     return COMPOSE_TEMPLATE.format(
         green_image=green["image"],
         green_port=DEFAULT_PORT,
@@ -290,7 +305,7 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_depends=" []",  
         participant_services=participant_services,
         client_depends=" []", 
-        wrapper_b64=WRAPPER_B64
+        fix_script_indented=fix_script_indented
     )
 
 
@@ -360,7 +375,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL SAFE WRAPPER)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL DIRECT SCRIPT)")
 
 if __name__ == "__main__":
     main()

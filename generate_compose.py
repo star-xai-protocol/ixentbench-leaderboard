@@ -55,7 +55,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA SERVIDOR: FIX PROTOCOLO ESTRICTO
+# 🟢 PLANTILLA SERVIDOR: FIX PROTOCOLO VALIDADO (FLATTENED JSON)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -64,7 +64,7 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX DE RED: Inyectamos respuestas que pasan la validación estricta de Pydantic
+    # 👇 FIX DE RED: Inyectamos rutas que cumplen el esquema Pydantic estricto
     entrypoint:
       - /bin/sh
       - -c
@@ -75,11 +75,13 @@ services:
         sed -i 's/from flask import Flask/from flask import Flask, jsonify/' src/green_agent.py
         
         # 2. Inyectamos:
-        #    - /agent-card.json (Tarjeta completa)
-        #    - / (Ruta raíz con estado "working" y mensaje dummy para satisfacer al cliente)
+        #    - /agent-card.json
+        #    - / (Ruta raíz con respuesta APLANADA: Task + Message juntos)
         
-        # ATENCION: JSON Blindado para Pydantic (state: working, messageId, parts...)
-        sed -i '/if __name__/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]}})\\n\\n@app.route("/", methods=["GET", "POST"])\\ndef root_fix(): return jsonify({{"jsonrpc": "2.0", "id": 1, "result": {{"contextId": "ctx", "taskId": "task", "status": {{"state": "working"}}, "final": False, "message": {{"messageId": "msg-1", "role": "assistant", "parts": [{{"text": "thinking...", "mimeType": "text/plain"}}]}}}}}})' src/green_agent.py
+        # ATENCION: 
+        # - "id": "game-task" (Obligatorio para Task)
+        # - "messageId", "role", "parts" (Obligatorios para Message, APLANADOS en el root de result)
+        sed -i '/if __name__/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]}})\\n\\n@app.route("/", methods=["GET", "POST"])\\ndef root_fix(): return jsonify({{"jsonrpc": "2.0", "id": 1, "result": {{"contextId": "ctx-1", "taskId": "task-1", "id": "task-1", "status": {{"state": "working"}}, "final": False, "messageId": "msg-dummy", "role": "assistant", "parts": [{{"text": "thinking...", "mimeType": "text/plain"}}]}}}})' src/green_agent.py
         
         echo "🚀 ARRANCANDO SERVIDOR..."
         exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
@@ -124,7 +126,7 @@ PARTICIPANT_TEMPLATE = """  {name}:
       green-agent:
         condition: service_healthy
     healthcheck:
-      # "exit 0" = Siempre sano (Evita muerte en Turno 3)
+      # Evita muerte por timeout en turno 3
       test: ["CMD-SHELL", "exit 0"]
       interval: 10s
       timeout: 5s
@@ -313,7 +315,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (STRICT PROTOCOL FIX)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL FIXED VERSION)")
 
 if __name__ == "__main__":
     main()

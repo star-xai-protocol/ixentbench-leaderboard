@@ -131,8 +131,7 @@ def dummy_rpc():
                             "contextId": "ctx", "taskId": "task", "id": "task",
                             "status": {"state": "completed"}, "final": True,
                             "messageId": "msg-done", "role": "assistant",
-                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}],
-                            "artifacts": []
+                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}]
                         }
                     }
                     yield "data: " + json.dumps(final_msg) + "\n\n"

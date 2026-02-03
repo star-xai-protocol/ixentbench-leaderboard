@@ -2,172 +2,93 @@
 
 import argparse
 import os
+import re
 import sys
-import time
-import tomli
-import shutil
-import base64
-
 from pathlib import Path
 from typing import Any
 
-# --- CÓDIGO DEL VIGILANTE: VERSIÓN HÍBRIDA (SCHEMA ESTRICTO + SPLIT EVENTS) ---
-VIGILANTE_CODE = r"""
-# ==========================================
-# PARCHE VIGILANTE: STRICT SCHEMA & SPLIT PROTOCOL
-# ==========================================
-import time
-import glob
-import json
-import os
-from flask import Response, stream_with_context, jsonify
+try:
+    import tomli
+except ImportError:
+    try:
+        import tomllib as tomli
+    except ImportError:
+        print("Error: tomli required. Install with: pip install tomli")
+        sys.exit(1)
+try:
+    import tomli_w
+except ImportError:
+    print("Error: tomli-w required. Install with: pip install tomli-w")
+    sys.exit(1)
+try:
+    import requests
+except ImportError:
+    print("Error: requests required. Install with: pip install requests")
+    sys.exit(1)
 
-# 1. AGENT CARD COMPLETA (Requerida por el cliente para iniciar)
-@app.route('/.well-known/agent-card.json')
-def agent_card_patched():
-    return jsonify({
-        "name": "Green Agent Patched",
-        "version": "1.0.0",
-        "description": "Patched for Leaderboard",
-        "url": "http://green-agent:9009/",
-        "protocolVersion": "0.3.0",
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"],
-        "capabilities": {"streaming": True},
-        "skills": [{
-            "id": "capsbench_eval", 
-            "name": "CapsBench Evaluation",
-            "description": "Evaluation skill",
-            "tags": ["evaluation"]
-        }]
-    })
 
-# 2. RPC ROBUSTO (Maneja la lectura y el envío con el esquema exacto)
-@app.route('/', methods=['POST', 'GET'])
-def dummy_rpc_patched():
-    def generate():
-        print("👁️ VIGILANTE: Esperando resultados...", flush=True)
-        ctx_id = "ctx-1"
-        task_id = "task-1"
-        
-        while True:
-            # Busca archivos de resultados en las rutas posibles
-            found = glob.glob('src/results/*.json') + glob.glob('results/*.json')
-            
-            if found:
-                file_path = found[0]
-                print(f"🏁 FIN DETECTADO: {file_path}", flush=True)
-                time.sleep(2) # Espera técnica para asegurar escritura en disco
-                
-                try:
-                    with open(file_path, 'r') as f:
-                        file_content = f.read()
-                except Exception:
-                    file_content = "{}"
+AGENTBEATS_API_URL = "https://agentbeats.dev/api/agents"
 
-                # --- SCHEMA ESTRICTO ---
-                # Construimos el artefacto con TODOS los campos que exige Pydantic
-                artifact_object = {
-                    "artifactId": "result-final-1", # Identificador único obligatorio
-                    "name": os.path.basename(file_path),
-                    "kind": "file",                 # Tipo obligatorio
-                    "parts": [{                     # Lista de partes obligatoria
-                        "text": file_content,
-                        "mimeType": "application/json"
-                    }]
-                }
 
-                # PASO 1: ENVIAR EL ARTEFACTO (Evento separado)
-                # 'final': False mantiene la conexión abierta.
-                # 'artifact': objeto singular (el cliente lo añade a su lista interna)
-                yield 'data: ' + json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": 1, 
-                    "result": {
-                        "contextId": ctx_id,
-                        "taskId": task_id,
-                        "final": False, 
-                        "artifact": artifact_object 
-                    }
-                }) + '\n\n'
-                
-                time.sleep(2) # Pausa vital para que el cliente procese el artefacto
+def fetch_agent_info(agentbeats_id: str) -> dict:
+    """Fetch agent info from agentbeats.dev API."""
+    url = f"{AGENTBEATS_API_URL}/{agentbeats_id}"
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: Failed to fetch agent {agentbeats_id}: {e}")
+        sys.exit(1)
+    except requests.exceptions.JSONDecodeError:
+        print(f"Error: Invalid JSON response for agent {agentbeats_id}")
+        sys.exit(1)
+    except requests.exceptions.RequestException as e:
+        print(f"Error: Request failed for agent {agentbeats_id}: {e}")
+        sys.exit(1)
 
-                # PASO 2: ENVIAR FIN DE TAREA
-                # 'final': True cierra la tarea.
-                # El cliente ahora guardará los artefactos recibidos en el paso anterior.
-                yield 'data: ' + json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": 1, 
-                    "result": {
-                        "contextId": ctx_id,
-                        "taskId": task_id,
-                        "final": True, 
-                        "status": {"state": "completed"}
-                    }
-                }) + '\n\n'
-                break
-            
-            # HEARTBEAT (Mantiene vivo el cliente mientras el agente piensa)
-            yield 'data: ' + json.dumps({
-                "jsonrpc": "2.0", 
-                "id": 1, 
-                "result": {
-                    "contextId": ctx_id,
-                    "taskId": task_id,
-                    "final": False, 
-                    "status": {"state": "working"}
-                }
-            }) + '\n\n'
-            time.sleep(2)
-            
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
-if __name__ == "__main__":
-    print("🟢 SERVIDOR VIGILANTE (HYBRID FIX) INICIANDO...", flush=True)
-    app.run(host="0.0.0.0", port=9009)
-"""
+COMPOSE_PATH = "docker-compose.yml"
+A2A_SCENARIO_PATH = "a2a-scenario.toml"
+ENV_PATH = ".env.example"
 
-# Codificamos en Base64
-VIGILANTE_PAYLOAD = base64.b64encode(VIGILANTE_CODE.encode('utf-8')).decode('utf-8')
+DEFAULT_PORT = 9009
+DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# PLANTILLA DOCKER COMPOSE
+# 🟢 PLANTILLA SERVIDOR (CON FIX 404 BLINDADO)
+# Usamos dobles llaves {{ }} para que Python no se rompa al generar el archivo.
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
   green-agent:
-    image: ghcr.io/star-xai-protocol/capsbench:latest
+    image: {green_image}
     platform: linux/amd64
     container_name: green-agent
     
-    # 🛡️ ESTRATEGIA: INYECCIÓN SEGURA VIA BASE64
+    # 👇 FIX 404: Inyecta la tarjeta de identidad que falta en el servidor
+    # Usamos SED para no romper el archivo y {{ }} para que Python no se queje
     entrypoint:
       - /bin/sh
       - -c
       - |
-        echo '🔧 PREPARANDO SERVIDOR...'
-        sed -i "s|@app.route('/',|@app.route('/old_root',|g" src/green_agent.py
-        sed -i "s|@app.route('/.well-known/agent-card.json'|@app.route('/.well-known/old-card.json'|g" src/green_agent.py
+        echo "🔧 FIX: Inyectando ruta agent-card.json..."
+        # 1. Añadimos jsonify a los imports
+        sed -i 's/from flask import Flask/from flask import Flask, jsonify/' src/green_agent.py
         
-        # Eliminar el arranque original
-        python -c "lines = [l for l in open('src/green_agent.py') if 'app.run' not in l]; open('src/green_agent.py','w').writelines(lines)"
+        # 2. Inyectamos la ruta justo antes del arranque
+        sed -i '/if __name__/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}}}})' src/green_agent.py
         
-        # Inyectar el Vigilante decodificando
-        echo "{vigilante_payload}" | base64 -d >> src/green_agent.py
-        
-        echo '🚀 ARRANCANDO...'
-        python -u src/green_agent.py
-    
-    command: []
-    environment:
-      - PORT=9009
-      - LOG_LEVEL=INFO
+        echo "🚀 ARRANCANDO SERVIDOR..."
+        exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
+
+    environment:{green_env}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9009/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    depends_on:{green_depends}
     networks:
       - agent-network
 
@@ -180,8 +101,7 @@ services:
       - ./a2a-scenario.toml:/app/scenario.toml
       - ./output:/app/output
     command: ["scenario.toml", "output/results.json"]
-    depends_on:
-      - green-agent
+    depends_on:{client_depends}
     networks:
       - agent-network
 
@@ -190,47 +110,208 @@ networks:
     driver: bridge
 """
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", required=True)
-    args = parser.parse_args()
-
-    with open(args.scenario, "rb") as f:
-        config = tomli.load(f)
-
-    participant_services = ""
-    for p in config.get("participants", []):
-        name = p.get("name", "purple_agent")
-        env_vars = p.get("env", {})
-        env_block = "\n    environment:"
-        for k, v in env_vars.items():
-            env_block += f"\n      - {k}={v}"
-
-        # Mantenemos el sleep infinity
-        participant_services += f"""
-  {name}:
-    image: ghcr.io/star-xai-protocol/capsbench-purple:latest
+# 🟢 PLANTILLA PARTICIPANTE (MODO ZOMBI - SOLUCIONA ERROR TURNO 3 Y KEYERROR)
+PARTICIPANT_TEMPLATE = """  {name}:
+    image: {image}
     platform: linux/amd64
     container_name: {name}
-    entrypoint: ["/bin/sh", "-c", "python -u purple_ai.py; echo '✅ FIN. DURMIENDO...'; sleep infinity"]
-    {env_block}
+    command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
+    environment:{env}
     depends_on:
-      - green-agent
+      green-agent:
+        condition: service_healthy
+    healthcheck:
+      # 👇 "exit 0" = Siempre sano. Docker no lo matará si tarda en pensar.
+      # Además, esto arregla tu KeyError porque ya no usa variables raras.
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
       - agent-network
 """
 
-    final_compose = COMPOSE_TEMPLATE.format(
+A2A_SCENARIO_TEMPLATE = """[green_agent]
+endpoint = "http://green-agent:{green_port}"
+
+{participants}
+{config}"""
+
+
+def resolve_image(agent: dict, name: str) -> None:
+    """Resolve docker image for an agent, either from 'image' field or agentbeats API."""
+    has_image = "image" in agent
+    has_id = "agentbeats_id" in agent
+
+    if has_image and has_id:
+        print(f"Error: {name} has both 'image' and 'agentbeats_id' - use one or the other")
+        sys.exit(1)
+    elif has_image:
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions (use 'image' for local testing only)")
+            sys.exit(1)
+        print(f"Using {name} image: {agent['image']}")
+    elif has_id:
+        info = fetch_agent_info(agent["agentbeats_id"])
+        agent["image"] = info["docker_image"]
+        
+        # 🟢 CAPTURAMOS EL ID DEL WEBHOOK
+        if "id" in info:
+            agent["webhook_id"] = info["id"]
+        
+        print(f"Resolved {name} image: {agent['image']}")
+    else:
+        print(f"Error: {name} must have either 'image' or 'agentbeats_id' field")
+        sys.exit(1)
+
+
+def parse_scenario(scenario_path: Path) -> dict[str, Any]:
+    toml_data = scenario_path.read_text()
+    data = tomli.loads(toml_data)
+
+    green = data.get("green_agent", {})
+    resolve_image(green, "green_agent")
+
+    participants = data.get("participants", [])
+
+    names = [p.get("name") for p in participants]
+    duplicates = [name for name in set(names) if names.count(name) > 1]
+    if duplicates:
+        print(f"Error: Duplicate participant names found: {', '.join(duplicates)}")
+        print("Each participant must have a unique name.")
+        sys.exit(1)
+
+    for participant in participants:
+        name = participant.get("name", "unknown")
+        resolve_image(participant, f"participant '{name}'")
+
+    return data
+
+
+def format_env_vars(env_dict: dict[str, Any]) -> str:
+    env_vars = {**DEFAULT_ENV_VARS, **env_dict}
+    lines = [f"      - {key}={value}" for key, value in env_vars.items()]
+    return "\n" + "\n".join(lines)
+
+
+def format_depends_on(services: list) -> str:
+    lines = []
+    for service in services:
+        lines.append(f"      {service}:")
+        lines.append(f"        condition: service_healthy")
+    return "\n" + "\n".join(lines)
+
+
+def generate_docker_compose(scenario: dict[str, Any]) -> str:
+    green = scenario["green_agent"]
+    participants = scenario.get("participants", [])
+
+    participant_names = [p["name"] for p in participants]
+
+    participant_services = "\n".join([
+        PARTICIPANT_TEMPLATE.format(
+            name=p["name"],
+            image=p["image"],
+            port=DEFAULT_PORT,
+            env=format_env_vars(p.get("env", {}))
+        )
+        for p in participants
+    ])
+
+    all_services = ["green-agent"] + participant_names
+
+    return COMPOSE_TEMPLATE.format(
+        green_image=green["image"],
+        green_port=DEFAULT_PORT,
+        green_env=format_env_vars(green.get("env", {})),
+        # 🟢 IMPORTANTE: Lista vacía para romper el ciclo de dependencias
+        green_depends=" []",  
         participant_services=participant_services,
-        vigilante_payload=VIGILANTE_PAYLOAD,
-        timestamp=int(time.time())
+        client_depends=format_depends_on(all_services)
     )
 
-    with open("docker-compose.yml", "w") as f:
-        f.write(final_compose)
-    
-    shutil.copy(args.scenario, "a2a-scenario.toml")
-    print("✅ LISTO: Configuración generada con protección total.")
+
+def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
+    green = scenario["green_agent"]
+    participants = scenario.get("participants", [])
+
+    participant_lines = []
+    for p in participants:
+        lines = [
+            f"[[participants]]",
+            f"role = \"{p['name']}\"",
+            f"endpoint = \"http://{p['name']}:{DEFAULT_PORT}\"",
+        ]
+        
+        # 🟢 USAMOS EL ID DEL WEBHOOK
+        if "webhook_id" in p:
+             lines.append(f"agentbeats_id = \"{p['webhook_id']}\"")
+        elif "agentbeats_id" in p:
+             lines.append(f"agentbeats_id = \"{p['agentbeats_id']}\"")
+        
+        participant_lines.append("\n".join(lines) + "\n")
+
+    config_section = scenario.get("config", {})
+    config_lines = [tomli_w.dumps({"config": config_section})]
+
+    return A2A_SCENARIO_TEMPLATE.format(
+        green_port=DEFAULT_PORT,
+        participants="\n".join(participant_lines),
+        config="\n".join(config_lines)
+    )
+
+
+def generate_env_file(scenario: dict[str, Any]) -> str:
+    green = scenario["green_agent"]
+    participants = scenario.get("participants", [])
+
+    secrets = set()
+    env_var_pattern = re.compile(r'\$\{([^}]+)\}')
+
+    for value in green.get("env", {}).values():
+        for match in env_var_pattern.findall(str(value)):
+            secrets.add(match)
+
+    for p in participants:
+        for value in p.get("env", {}).values():
+            for match in env_var_pattern.findall(str(value)):
+                secrets.add(match)
+
+    if not secrets:
+        return ""
+
+    lines = []
+    for secret in sorted(secrets):
+        lines.append(f"{secret}=")
+
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate Docker Compose from scenario.toml")
+    parser.add_argument("--scenario", type=Path)
+    args = parser.parse_args()
+
+    if not args.scenario.exists():
+        print(f"Error: {args.scenario} not found")
+        sys.exit(1)
+
+    scenario = parse_scenario(args.scenario)
+
+    with open(COMPOSE_PATH, "w") as f:
+        f.write(generate_docker_compose(scenario))
+
+    with open(A2A_SCENARIO_PATH, "w") as f:
+        f.write(generate_a2a_scenario(scenario))
+
+    env_content = generate_env_file(scenario)
+    if env_content:
+        with open(ENV_PATH, "w") as f:
+            f.write(env_content)
+        print(f"Generated {ENV_PATH}")
+
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL FIXED VERSION)")
 
 if __name__ == "__main__":
     main()

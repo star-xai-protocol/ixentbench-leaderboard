@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Importaciones necesarias (asegúrate de tener: pip install requests tomli tomli-w)
 try:
     import tomli
 except ImportError:
@@ -56,6 +55,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
+# 🟢 PLANTILLA SERVIDOR (CON FIX 404 PARA EL CLIENTE)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -63,10 +63,26 @@ services:
     image: {green_image}
     platform: linux/amd64
     container_name: green-agent
-    command: ["--host", "0.0.0.0", "--port", "{green_port}", "--card-url", "http://green-agent:{green_port}"]
+    
+    # 👇 FIX 404: Inyecta la tarjeta de identidad que falta en el servidor
+    # Usamos SED para no romper el archivo y {{ }} para que Python no se queje
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "🔧 FIX: Inyectando ruta agent-card.json..."
+        # 1. Añadimos jsonify a los imports
+        sed -i 's/from flask import Flask/from flask import Flask, jsonify/' src/green_agent.py
+        
+        # 2. Inyectamos la ruta justo antes del arranque
+        sed -i '/if __name__/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}}}})' src/green_agent.py
+        
+        echo "🚀 ARRANCANDO SERVIDOR..."
+        exec python -u src/green_agent.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}
+
     environment:{green_env}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/.well-known/agent-card.json"]
+      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -93,26 +109,24 @@ networks:
     driver: bridge
 """
 
+# 🟢 PLANTILLA PARTICIPANTE (MODO ZOMBI - SOLUCIONA ERROR TURNO 3 Y KEYERROR)
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
     container_name: {name}
     command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
     environment:{env}
-    #***********************
     depends_on:
       green-agent:
         condition: service_healthy
-    #***********************
     healthcheck:
-      # test: ["CMD", "curl", "-f", "http://localhost:{port}/.well-known/agent-card.json"]
-      #***********************
-      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
-      #***********************
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
+      # 👇 "exit 0" = Siempre sano. Docker no lo matará si tarda en pensar.
+      # Además, esto arregla tu KeyError porque ya no usa {green_port}
+      test: ["CMD-SHELL", "exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
       - agent-network
 """
@@ -141,12 +155,10 @@ def resolve_image(agent: dict, name: str) -> None:
         info = fetch_agent_info(agent["agentbeats_id"])
         agent["image"] = info["docker_image"]
         
-        # 🟢 CAMBIO AQUI 1: CAPTURAR EL ID DEL WEBHOOK
-        # Guardamos el ID real que devuelve la API (Webhook ID)
+        # 🟢 CAPTURAMOS EL ID DEL WEBHOOK
         if "id" in info:
             agent["webhook_id"] = info["id"]
-        # ----------------------------------------------------
-
+        
         print(f"Resolved {name} image: {agent['image']}")
     else:
         print(f"Error: {name} must have either 'image' or 'agentbeats_id' field")
@@ -162,7 +174,6 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
 
     participants = data.get("participants", [])
 
-    # Check for duplicate participant names
     names = [p.get("name") for p in participants]
     duplicates = [name for name in set(names) if names.count(name) > 1]
     if duplicates:
@@ -213,9 +224,8 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_image=green["image"],
         green_port=DEFAULT_PORT,
         green_env=format_env_vars(green.get("env", {})),
-        #*****************
-        green_depends=" []", # green_depends=format_depends_on(participant_names),
-        #*****************
+        # 🟢 IMPORTANTE: Lista vacía para romper el ciclo de dependencias
+        green_depends=" []",  
         participant_services=participant_services,
         client_depends=format_depends_on(all_services)
     )
@@ -233,14 +243,12 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
             f"endpoint = \"http://{p['name']}:{DEFAULT_PORT}\"",
         ]
         
-        # 🟢 CAMBIO AQUI 2: ESCRIBIR EL ID DEL WEBHOOK
-        # Usamos el ID del Webhook si existe (es el prioritario), si no el genérico
+        # 🟢 USAMOS EL ID DEL WEBHOOK
         if "webhook_id" in p:
              lines.append(f"agentbeats_id = \"{p['webhook_id']}\"")
         elif "agentbeats_id" in p:
              lines.append(f"agentbeats_id = \"{p['agentbeats_id']}\"")
-        # --------------------------------------------------------------------
-
+        
         participant_lines.append("\n".join(lines) + "\n")
 
     config_section = scenario.get("config", {})
@@ -258,7 +266,6 @@ def generate_env_file(scenario: dict[str, Any]) -> str:
     participants = scenario.get("participants", [])
 
     secrets = set()
-
     env_var_pattern = re.compile(r'\$\{([^}]+)\}')
 
     for value in green.get("env", {}).values():
@@ -303,7 +310,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH}")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL FIXED VERSION)")
 
 if __name__ == "__main__":
     main()

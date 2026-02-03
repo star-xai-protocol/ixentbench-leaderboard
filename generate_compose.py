@@ -93,23 +93,20 @@ networks:
     driver: bridge
 """
 
-PARTICIPANT_TEMPLATE = """  {name}:
-    image: {image}
-    platform: linux/amd64
-    container_name: {name}
-    command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
-    environment:{env}
-    depends_on:
-      green-agent:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:{port}/.well-known/agent-card.json"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 30s
-    networks:
-      - agent-network
+PARTICIPANT_TEMPLATE = """ {name}:
+image: {image}
+platform: linux/amd64
+container_name: {name}
+command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
+environment:{env}
+healthcheck:
+test: ["CMD", "curl", "-f", "http://localhost:{port}/.well-known/agent-card.json"]
+interval: 5s
+timeout: 3s
+retries: 10
+start_period: 30s
+networks:
+- agent-network
 """
 
 A2A_SCENARIO_TEMPLATE = """[green_agent]

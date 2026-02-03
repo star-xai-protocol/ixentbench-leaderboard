@@ -99,8 +99,16 @@ PARTICIPANT_TEMPLATE = """  {name}:
     container_name: {name}
     command: ["--host", "0.0.0.0", "--port", "{port}", "--card-url", "http://{name}:{port}"]
     environment:{env}
+    #***********************
+    depends_on:
+      green-agent:
+        condition: service_healthy
+    #***********************
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:{port}/.well-known/agent-card.json"]
+      # test: ["CMD", "curl", "-f", "http://localhost:{port}/.well-known/agent-card.json"]
+      #***********************
+      test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
+      #***********************
       interval: 5s
       timeout: 3s
       retries: 10
@@ -205,7 +213,9 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_image=green["image"],
         green_port=DEFAULT_PORT,
         green_env=format_env_vars(green.get("env", {})),
-        green_depends=format_depends_on(participant_names),
+        #*****************
+        green_depends=" []", # green_depends=format_depends_on(participant_names),
+        #*****************
         participant_services=participant_services,
         client_depends=format_depends_on(all_services)
     )

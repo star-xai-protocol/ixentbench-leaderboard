@@ -85,8 +85,7 @@ def agent_card_fix():
     })
 '''
 
-# === 3. NUEVA dummy_rpc con STREAMING REAL (text/event-stream) ===
-# Usamos yield para enviar datos poco a poco. Esto satisface al cliente SSE.
+# === 3. NUEVA dummy_rpc con FIX LÓGICO Y PROTOCOLO SPLIT ===
 new_dummy_rpc = r'''
 @app.route('/', methods=['POST', 'GET'])
 def dummy_rpc():
@@ -94,7 +93,6 @@ def dummy_rpc():
     
     def generate():
         # 1. Latido inicial (Status: Working)
-        # Mantiene al cliente feliz mientras esperamos.
         base_msg = {
             "jsonrpc": "2.0", "id": 1,
             "result": {
@@ -104,14 +102,12 @@ def dummy_rpc():
                 "parts": [{"text": "Game running...", "mimeType": "text/plain"}]
             }
         }
-        # Formato SSE: "data: <json>\n\n"
         yield "data: " + json.dumps(base_msg) + "\n\n"
         
         start_time = time.time()
         
         while True:
-            # Buscar resultados
-            # patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl', 'output/*.json']
+            # CAMBIO 1: Solo buscamos resultados finales (quitamos .jsonl)
             patterns = ['results/*.json', 'src/results/*.json', 'output/*.json']
             files = []
             for p in patterns:
@@ -125,7 +121,31 @@ def dummy_rpc():
                 if (time.time() - os.path.getmtime(last_file)) < 600:
                     print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
                     
-                    # Mensaje FINAL (Status: Completed) - Opción 1
+                    # Leemos el contenido del archivo
+                    try:
+                        with open(last_file, 'r') as f: content = f.read()
+                    except: content = "{}"
+
+                    # CAMBIO 2: Enviar Artefacto PRIMERO (Sin cerrar)
+                    artifact_msg = {
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {
+                            "contextId": "ctx", "taskId": "task", "id": "task",
+                            "final": False, # Mantenemos abierto
+                            "artifact": {
+                                "artifactId": "result-1",
+                                "name": "results.json",
+                                "kind": "file",
+                                "parts": [{"text": content, "mimeType": "application/json"}]
+                            }
+                        }
+                    }
+                    yield "data: " + json.dumps(artifact_msg) + "\n\n"
+                    
+                    # Espera crítica para sincronización
+                    time.sleep(2)
+
+                    # CAMBIO 3: Enviar Cierre FINAL (Con artifacts vacío para evitar error)
                     final_msg = {
                         "jsonrpc": "2.0", "id": 1,
                         "result": {
@@ -139,15 +159,13 @@ def dummy_rpc():
                     yield "data: " + json.dumps(final_msg) + "\n\n"
                     break
             
-            if time.time() - start_time > 1800:
+            if time.time() - start_time > 3600:
                 print("⏰ Timeout", flush=True)
                 break
                 
-            time.sleep(2)
-            # Enviar latido para mantener conexión viva
+            time.sleep(3)
             yield "data: " + json.dumps(base_msg) + "\n\n"
 
-    # Retornamos una respuesta con el mimetype correcto para SSE
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 '''
 

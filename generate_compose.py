@@ -38,12 +38,12 @@ DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
 
-# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO (V5 - SCHEMA FIX) ---
+# --- 🛠️ SCRIPT DE REPARACIÓN MAESTRO (V6 - STREAMING SSE) ---
 # Se ejecuta DENTRO del contenedor.
 FIX_SCRIPT_SOURCE = r"""
 import sys, os, re, json, time, glob
 
-print("🔧 [FIX] Iniciando reparación del servidor...", flush=True)
+print("🔧 [FIX] Iniciando reparación del servidor (Modo Streaming SSE)...", flush=True)
 
 target_file = 'src/green_agent.py'
 if not os.path.exists(target_file):
@@ -56,84 +56,115 @@ if not os.path.exists(target_file):
 with open(target_file, 'r') as f:
     content = f.read()
 
-# === 1. ASEGURAR IMPORTS ===
+# === 1. ASEGURAR IMPORTS (CRÍTICO: Response, stream_with_context) ===
 if "import time" not in content:
     content = "import time, glob, os, json\n" + content
-if "from flask import Flask" in content:
-    content = content.replace("from flask import Flask", "from flask import Flask, jsonify, request")
-else:
-    content = "from flask import Flask, jsonify, request\n" + content
 
-# === 2. CÓDIGO NUEVO (CARD COMPLETA + RPC) ===
-injected_code = r'''
-# --- INJECTED CODE START ---
+# Reemplazamos la importación de Flask para incluir todo lo necesario para Streaming
+if "from flask import Flask" in content:
+    content = content.replace("from flask import Flask", "from flask import Flask, jsonify, request, Response, stream_with_context")
+else:
+    content = "from flask import Flask, jsonify, request, Response, stream_with_context\n" + content
+
+# === 2. AGENT CARD (Ya funciona, la mantenemos igual) ===
+agent_card_route = r'''
 @app.route("/.well-known/agent-card.json", methods=["GET"])
 def agent_card_fix():
-    # Estructura COMPLETA para pasar validación Pydantic estricta
     return jsonify({
         "schema_version": "a2a-v1",
         "name": "green-agent-patched",
         "description": "Patched for AgentBeats",
         "url": "http://green-agent:9009",
-        "version": "1.0.0",                 # CAMPO AÑADIDO
+        "version": "1.0.0",
         "protocolVersion": "0.3.0",
         "skills": [],
         "capabilities": {"streaming": True},
         "endpoints": [{"url": "http://green-agent:9009/", "transports": ["http"]}],
-        "defaultInputModes": ["text"],      # CAMPO AÑADIDO
-        "defaultOutputModes": ["text"]      # CAMPO AÑADIDO
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text"]
     })
-
-@app.route('/', methods=['POST', 'GET'])
-def dummy_rpc():
-    print("🔒 [BLOQUEO] Cliente conectado. Esperando fin de partida...", flush=True)
-    start_time = time.time()
-    
-    while True:
-        patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl', 'output/*.json']
-        files = []
-        for p in patterns:
-            files.extend(glob.glob(p))
-            
-        if files:
-            files.sort(key=os.path.getmtime, reverse=True)
-            last_file = files[0]
-            # Si el archivo tiene menos de 10 min
-            if (time.time() - os.path.getmtime(last_file)) < 600:
-                print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
-                return jsonify({
-                    "jsonrpc": "2.0", "id": 1,
-                    "result": {
-                        "contextId": "ctx", "taskId": "task", "id": "task",
-                        "status": {"state": "completed"}, "final": True,
-                        "messageId": "msg-done", "role": "assistant",
-                        "parts": [{"text": "Game Finished", "mimeType": "text/plain"}]
-                    }
-                })
-        
-        if time.time() - start_time > 1800:
-            return jsonify({"error": "timeout"}), 504
-            
-        time.sleep(4)
-# --- INJECTED CODE END ---
 '''
 
-# === 3. DESACTIVAR RUTAS ANTIGUAS (REGEX) ===
+# === 3. NUEVA dummy_rpc con STREAMING REAL (text/event-stream) ===
+# Usamos yield para enviar datos poco a poco. Esto satisface al cliente SSE.
+new_dummy_rpc = r'''
+@app.route('/', methods=['POST', 'GET'])
+def dummy_rpc():
+    print("🔒 [STREAM] Cliente conectado. Iniciando streaming...", flush=True)
+    
+    def generate():
+        # 1. Latido inicial (Status: Working)
+        # Mantiene al cliente feliz mientras esperamos.
+        base_msg = {
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "contextId": "ctx", "taskId": "task", "id": "task",
+                "status": {"state": "working"}, "final": False,
+                "messageId": "msg-alive", "role": "assistant",
+                "parts": [{"text": "Game running...", "mimeType": "text/plain"}]
+            }
+        }
+        # Formato SSE: "data: <json>\n\n"
+        yield "data: " + json.dumps(base_msg) + "\n\n"
+        
+        start_time = time.time()
+        
+        while True:
+            # Buscar resultados
+            patterns = ['results/*.json', 'src/results/*.json', 'replays/*.jsonl', 'src/replays/*.jsonl', 'output/*.json']
+            files = []
+            for p in patterns:
+                files.extend(glob.glob(p))
+            
+            if files:
+                files.sort(key=os.path.getmtime, reverse=True)
+                last_file = files[0]
+                
+                # Si encontramos un resultado reciente
+                if (time.time() - os.path.getmtime(last_file)) < 600:
+                    print(f"✅ [FIN] Detectado: {os.path.basename(last_file)}", flush=True)
+                    
+                    # Mensaje FINAL (Status: Completed)
+                    final_msg = {
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {
+                            "contextId": "ctx", "taskId": "task", "id": "task",
+                            "status": {"state": "completed"}, "final": True,
+                            "messageId": "msg-done", "role": "assistant",
+                            "parts": [{"text": "Game Finished", "mimeType": "text/plain"}]
+                        }
+                    }
+                    yield "data: " + json.dumps(final_msg) + "\n\n"
+                    break
+            
+            if time.time() - start_time > 1800:
+                print("⏰ Timeout", flush=True)
+                break
+                
+            time.sleep(2)
+            # Enviar latido para mantener conexión viva
+            yield "data: " + json.dumps(base_msg) + "\n\n"
+
+    # Retornamos una respuesta con el mimetype correcto para SSE
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+'''
+
+# === 4. DESACTIVAR RUTAS ANTIGUAS ===
 content = re.sub(r"@app\.route\s*\(\s*['\"]/['\"]", "# @app.route('/'", content)
 content = re.sub(r"@app\.route\s*\(\s*['\"]/\.well-known/agent-card\.json['\"]", "# @app.route('/card'", content)
 
-# === 4. INYECTAR CÓDIGO NUEVO ===
+# === 5. INYECTAR CÓDIGO ===
 if "if __name__" in content:
     parts = content.split("if __name__")
-    content = "".join(parts[:-1]) + "\n" + injected_code + "\n\nif __name__" + parts[-1]
+    content = "".join(parts[:-1]) + "\n" + agent_card_route + "\n" + new_dummy_rpc + "\n\nif __name__" + parts[-1]
 else:
-    content += "\n" + injected_code
+    content += "\n" + agent_card_route + "\n" + new_dummy_rpc
 
-# === 5. GUARDAR Y EJECUTAR ===
+# === 6. GUARDAR Y EJECUTAR ===
 with open(target_file, 'w') as f:
     f.write(content)
 
-print("✅ Servidor parcheado (Schema V5). Arrancando...", flush=True)
+print("✅ Servidor parcheado (SSE Streaming). Arrancando...", flush=True)
 sys.stdout.flush()
 os.execvp("python", ["python", "-u", target_file] + sys.argv[1:])
 """
@@ -369,7 +400,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (SCHEMA FIXED)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL STREAMING FIX)")
 
 if __name__ == "__main__":
     main()

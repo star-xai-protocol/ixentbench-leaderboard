@@ -55,7 +55,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA SERVIDOR: STREAMING (VIGILANTE) + ESQUEMA PLANO (VALIDADO)
+# 🟢 PLANTILLA SERVIDOR: LONG POLLING BLOCKING (VIGILANTE)
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -64,19 +64,17 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX DE RED AVANZADO: 
-    # 1. Mantiene conexión abierta (Streaming) para que el cliente no se vaya.
-    # 2. Usa JSON Plano (Flattened) para que Pydantic no de error de validación.
+    # 👇 FIX DE RED: LONG POLLING
+    # El servidor NO responde hasta que el juego termina. Esto obliga al cliente a esperar.
     entrypoint:
       - /bin/sh
       - -c
       - |
-        echo "🔧 FIX: Preparando parche de Streaming con Schema Validado..."
+        echo "🔧 FIX: Preparando modo Vigilante (Long Polling)..."
         
         # 1. Crear script de parche en /tmp/patch.py
-        # ATENCIÓN: Las dobles llaves {{{{ }}}} son críticas para el formato Python
         cat <<EOF > /tmp/patch.py
-from flask import Response, stream_with_context, jsonify
+from flask import jsonify
 import time, glob, json, os
 
 @app.route('/.well-known/agent-card.json')
@@ -87,7 +85,7 @@ def card_fix():
         "description": "Fix",
         "url": "http://green-agent:9009/",
         "protocolVersion": "0.3.0",
-        "capabilities": {{"streaming": True}},
+        "capabilities": {{}}, 
         "defaultInputModes": ["text"],
         "defaultOutputModes": ["text"],
         "skills": []
@@ -95,72 +93,47 @@ def card_fix():
 
 @app.route('/', methods=['POST', 'GET'])
 def root_fix():
-    def generate():
-        # ESTRUCTURA PLANA (Flattened) - La que funcionó antes
-        base_response = {{
-            "jsonrpc": "2.0", 
-            "id": 1, 
-            "result": {{
-                "contextId": "ctx", 
-                "taskId": "task", 
-                "id": "task",
-                "status": {{"state": "working"}}, 
-                "final": False, 
-                "messageId": "msg-alive", 
-                "role": "assistant", 
-                "parts": [{{"text": "Game in progress...", "mimeType": "text/plain"}}]
-            }}
-        }}
+    print("🔒 CLIENTE CONECTADO. RETENIENDO HASTA FIN DE PARTIDA...", flush=True)
+    
+    # Bucle de bloqueo: No respondemos hasta que haya resultados
+    start_time = time.time()
+    while True:
+        # Buscamos partidas recientes (< 5 min)
+        files = sorted(glob.glob('/app/src/replays/*.jsonl'), key=os.path.getmtime)
+        current_time = time.time()
+        recent_files = [f for f in files if (current_time - os.path.getmtime(f)) < 300]
         
-        # Latido inicial
-        yield 'data: ' + json.dumps(base_response) + '\\n\\n'
-        
-        # Bucle de vigilancia
-        start_time = time.time()
-        while True:
-            # Buscamos partidas terminadas RECIENTES (modificadas en los ultimos 5 min)
-            files = sorted(glob.glob('/app/src/replays/*.jsonl'), key=os.path.getmtime)
-            current_time = time.time()
+        if recent_files:
+            last_file = os.path.basename(recent_files[-1])
+            print(f"✅ JUEGO TERMINADO: {{last_file}}. LIBERANDO CLIENTE.", flush=True)
             
-            # Filtramos solo archivos recientes (< 300 segundos)
-            recent_files = [f for f in files if (current_time - os.path.getmtime(f)) < 300]
-            
-            if recent_files:
-                last_file = os.path.basename(recent_files[-1])
-                print(f"✅ JUEGO TERMINADO DETECTADO: {{last_file}}", flush=True)
-                
-                # Respuesta FINAL (State: Completed)
-                final_response = {{
-                    "jsonrpc": "2.0", 
-                    "id": 1, 
-                    "result": {{
-                        "contextId": "ctx", 
-                        "taskId": "task", 
-                        "id": "task",
-                        "status": {{"state": "completed"}}, 
-                        "final": True,
-                        "messageId": "msg-done",
-                        "role": "assistant",
-                        "parts": [{{"text": "Game Finished", "mimeType": "text/plain"}}]
-                    }}
+            # Respondemos con el JSON final que el cliente quiere
+            return jsonify({{
+                "jsonrpc": "2.0", 
+                "id": 1, 
+                "result": {{
+                    "contextId": "ctx", 
+                    "taskId": "task", 
+                    "id": "task",
+                    "status": {{"state": "completed"}}, 
+                    "final": True,
+                    "messageId": "msg-done",
+                    "role": "assistant",
+                    "parts": [{{"text": "Game Finished", "mimeType": "text/plain"}}]
                 }}
-                
-                yield 'data: ' + json.dumps(final_response) + '\\n\\n'
-                break
+            }})
+        
+        # Timeout de seguridad (20 min) para no colgar CI eternamente
+        if time.time() - start_time > 1200:
+            print("⚠️ TIMEOUT DE ESPERA AGOTADO", flush=True)
+            return jsonify({{"error": "timeout"}})
             
-            # Timeout de seguridad (10 minutos)
-            if time.time() - start_time > 600:
-                break
-                
-            time.sleep(2)
-            # Latido para mantener vivo al cliente
-            yield 'data: ' + json.dumps(base_response) + '\\n\\n'
+        # Esperamos 5 segundos antes de volver a mirar
+        time.sleep(5)
 
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 EOF
 
-        # 2. Inyectar el parche en el servidor
-        # Usamos 'sed' para insertar el contenido de patch.py antes del bloque main
+        # 2. Inyectar el parche
         sed -i '/if __name__/e cat /tmp/patch.py' src/green_agent.py
         
         echo "🚀 ARRANCANDO SERVIDOR..."
@@ -206,7 +179,6 @@ PARTICIPANT_TEMPLATE = """  {name}:
       green-agent:
         condition: service_healthy
     healthcheck:
-      # Siempre sano para evitar muerte en Turno 3
       test: ["CMD-SHELL", "exit 0"]
       interval: 10s
       timeout: 5s
@@ -326,7 +298,6 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
             f"endpoint = \"http://{p['name']}:{DEFAULT_PORT}\"",
         ]
         
-        # 🟢 USAMOS EL ID DEL WEBHOOK
         if "webhook_id" in p:
              lines.append(f"agentbeats_id = \"{p['webhook_id']}\"")
         elif "agentbeats_id" in p:
@@ -393,7 +364,7 @@ def main():
             f.write(env_content)
         print(f"Generated {ENV_PATH}")
 
-    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (FINAL WORKING STREAM)")
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH} (LONG POLLING)")
 
 if __name__ == "__main__":
     main()

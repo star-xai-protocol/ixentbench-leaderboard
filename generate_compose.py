@@ -55,7 +55,7 @@ ENV_PATH = ".env.example"
 DEFAULT_PORT = 9009
 DEFAULT_ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# 🟢 PLANTILLA SERVIDOR (CON FIX 404 COMPLETO - JSON VALIDO)
+# 🟢 PLANTILLA SERVIDOR: Con el parche SED para arreglar el error 404 del cliente
 COMPOSE_TEMPLATE = """# Auto-generated from scenario.toml
 
 services:
@@ -64,18 +64,17 @@ services:
     platform: linux/amd64
     container_name: green-agent
     
-    # 👇 FIX 404: Inyecta la tarjeta COMPLETA que exige el cliente estricto
+    # 👇 FIX 404: Inyectamos la tarjeta de identidad usando SED (seguro para Python)
     entrypoint:
       - /bin/sh
       - -c
       - |
-        echo "🔧 FIX: Inyectando ruta agent-card.json con TODOS los campos..."
-        
-        # 1. Añadimos jsonify a los imports
+        echo "🔧 FIX: Inyectando ruta agent-card.json..."
+        # 1. Importar jsonify
         sed -i 's/from flask import Flask/from flask import Flask, jsonify/' src/green_agent.py
         
-        # 2. Inyectamos la ruta con el JSON COMPLETO (inputModes, outputModes, skills)
-        # ATENCION: Dobles llaves {{{{ }}}} usadas para escapar en Python
+        # 2. Inyectar la ruta con TODOS los campos requeridos (evita error de validación)
+        # Usamos dobles llaves {{{{ }}}} para escapar en Python .format()
         sed -i '/if __name__/i @app.route("/.well-known/agent-card.json")\\ndef card_fix(): return jsonify({{"name":"GreenFix","version":"1.0","description":"Fix","url":"http://green-agent:9009/","protocolVersion":"0.3.0","capabilities":{{}},"defaultInputModes":["text"],"defaultOutputModes":["text"],"skills":[]}})' src/green_agent.py
         
         echo "🚀 ARRANCANDO SERVIDOR..."
@@ -110,7 +109,7 @@ networks:
     driver: bridge
 """
 
-# 🟢 PLANTILLA PARTICIPANTE (MODO ZOMBI - ANTI MUERTE TURNO 3)
+# 🟢 PLANTILLA PARTICIPANTE: MODO ZOMBI (Sin variable green_port para evitar KeyError)
 PARTICIPANT_TEMPLATE = """  {name}:
     image: {image}
     platform: linux/amd64
@@ -121,7 +120,9 @@ PARTICIPANT_TEMPLATE = """  {name}:
       green-agent:
         condition: service_healthy
     healthcheck:
-      # "exit 0" = Siempre sano. Docker no lo matará si tarda en pensar.
+      # "exit 0" significa SIEMPRE SANO.
+      # Esto evita que Docker mate al agente si tarda mucho en pensar (Turno 3).
+      # Y lo más importante: NO USA {green_port}, así que no dará KeyError.
       test: ["CMD-SHELL", "exit 0"]
       interval: 10s
       timeout: 5s
@@ -139,7 +140,7 @@ endpoint = "http://green-agent:{green_port}"
 
 
 def resolve_image(agent: dict, name: str) -> None:
-    """Resolve docker image for an agent, either from 'image' field or agentbeats API."""
+    """Resolve docker image for an agent."""
     has_image = "image" in agent
     has_id = "agentbeats_id" in agent
 
@@ -148,14 +149,14 @@ def resolve_image(agent: dict, name: str) -> None:
         sys.exit(1)
     elif has_image:
         if os.environ.get("GITHUB_ACTIONS"):
-            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions (use 'image' for local testing only)")
+            print(f"Error: {name} requires 'agentbeats_id' for GitHub Actions")
             sys.exit(1)
         print(f"Using {name} image: {agent['image']}")
     elif has_id:
         info = fetch_agent_info(agent["agentbeats_id"])
         agent["image"] = info["docker_image"]
         
-        # 🟢 CAPTURAMOS EL ID DEL WEBHOOK
+        # 🟢 CAPTURAMOS EL ID DEL WEBHOOK (Para que el resultado salga bien)
         if "id" in info:
             agent["webhook_id"] = info["id"]
         
@@ -178,7 +179,6 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
     duplicates = [name for name in set(names) if names.count(name) > 1]
     if duplicates:
         print(f"Error: Duplicate participant names found: {', '.join(duplicates)}")
-        print("Each participant must have a unique name.")
         sys.exit(1)
 
     for participant in participants:
@@ -208,6 +208,8 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
 
     participant_names = [p["name"] for p in participants]
 
+    # Aquí generamos los servicios de los participantes
+    # Ya no pasamos 'green_port' porque la plantilla nueva no lo necesita
     participant_services = "\n".join([
         PARTICIPANT_TEMPLATE.format(
             name=p["name"],
@@ -224,7 +226,7 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
         green_image=green["image"],
         green_port=DEFAULT_PORT,
         green_env=format_env_vars(green.get("env", {})),
-        # 🟢 IMPORTANTE: Lista vacía para romper el ciclo de dependencias
+        # Lista vacía para evitar ciclos de dependencia
         green_depends=" []",  
         participant_services=participant_services,
         client_depends=format_depends_on(all_services)
@@ -243,7 +245,7 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
             f"endpoint = \"http://{p['name']}:{DEFAULT_PORT}\"",
         ]
         
-        # 🟢 USAMOS EL ID DEL WEBHOOK
+        # 🟢 USAMOS EL ID DEL WEBHOOK SI EXISTE
         if "webhook_id" in p:
              lines.append(f"agentbeats_id = \"{p['webhook_id']}\"")
         elif "agentbeats_id" in p:
@@ -251,4 +253,66 @@ def generate_a2a_scenario(scenario: dict[str, Any]) -> str:
         
         participant_lines.append("\n".join(lines) + "\n")
 
-    config
+    config_section = scenario.get("config", {})
+    config_lines = [tomli_w.dumps({"config": config_section})]
+
+    return A2A_SCENARIO_TEMPLATE.format(
+        green_port=DEFAULT_PORT,
+        participants="\n".join(participant_lines),
+        config="\n".join(config_lines)
+    )
+
+
+def generate_env_file(scenario: dict[str, Any]) -> str:
+    green = scenario["green_agent"]
+    participants = scenario.get("participants", [])
+
+    secrets = set()
+    env_var_pattern = re.compile(r'\$\{([^}]+)\}')
+
+    for value in green.get("env", {}).values():
+        for match in env_var_pattern.findall(str(value)):
+            secrets.add(match)
+
+    for p in participants:
+        for value in p.get("env", {}).values():
+            for match in env_var_pattern.findall(str(value)):
+                secrets.add(match)
+
+    if not secrets:
+        return ""
+
+    lines = []
+    for secret in sorted(secrets):
+        lines.append(f"{secret}=")
+
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate Docker Compose from scenario.toml")
+    parser.add_argument("--scenario", type=Path)
+    args = parser.parse_args()
+
+    if not args.scenario.exists():
+        print(f"Error: {args.scenario} not found")
+        sys.exit(1)
+
+    scenario = parse_scenario(args.scenario)
+
+    with open(COMPOSE_PATH, "w") as f:
+        f.write(generate_docker_compose(scenario))
+
+    with open(A2A_SCENARIO_PATH, "w") as f:
+        f.write(generate_a2a_scenario(scenario))
+
+    env_content = generate_env_file(scenario)
+    if env_content:
+        with open(ENV_PATH, "w") as f:
+            f.write(env_content)
+        print(f"Generated {ENV_PATH}")
+
+    print(f"Generated {COMPOSE_PATH} and {A2A_SCENARIO_PATH}")
+
+if __name__ == "__main__":
+    main()

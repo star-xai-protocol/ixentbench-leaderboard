@@ -118,11 +118,7 @@ def dummy_rpc():
                 '/app/results/*.json', 
                 '/app/output/*.json',
                 '/app/*.json',
-                'src/results/*.json',
-                'replays/*.jsonl',
-                'src/replays/*.jsonl',
-                'results/*.json',
-                'output/*.json'
+                'src/results/*.json' 
             ]
             files = []
             for p in patterns:

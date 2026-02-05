@@ -297,13 +297,13 @@ services:
     volumes:
       - ./a2a-scenario.toml:/app/scenario.toml
       - ./output:/app/output
-    # 👇 FIX DEFINITIVO: Usamos entrypoint para sobreescribir la ejecución por defecto.
-    # El '|| true' al final fuerza que el contenedor salga con código 0 (Éxito)
-    # aunque el cliente de Python falle con el error NoneType.
+    # 👇 FIX DEFINITIVO V2: Usamos python directo con la ruta absoluta.
+    # Sabemos que el archivo existe en /app/src/agentbeats/client_cli.py por los logs anteriores.
+    # Añadimos PYTHONPATH para que funcionen los imports.
     entrypoint: 
       - /bin/sh
       - -c
-      - "agentbeats-client scenario.toml output/results.json || true"
+      - "export PYTHONPATH=/app/src:$PYTHONPATH && python /app/src/agentbeats/client_cli.py scenario.toml output/results.json || true"
     depends_on:{client_depends}
     networks:
       - agent-network

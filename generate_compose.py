@@ -278,6 +278,10 @@ services:
       - "echo {fix_b64} | base64 -d > /tmp/fix_server.py && python /tmp/fix_server.py --host 0.0.0.0 --port {green_port} --card-url http://green-agent:{green_port}"
 
     environment:{green_env}
+    # 👇 FIX CRÍTICO: ¡Añadimos el volumen aquí también!
+    # Así, cuando el green-agent copie el archivo a /app/output, aparecerá en el host.
+    volumes:
+      - ./output:/app/output
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s

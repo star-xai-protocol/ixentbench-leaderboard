@@ -98,7 +98,7 @@ def serve_results(filename):
     return jsonify({"error": "File not found"}), 404
 '''
 
-# === 3. RPC CON RATE LIMIT Y DESCARGA HTTP ===
+# === 3. RPC UNIFICADO (FIX DEFINITIVO: MERGED ARTIFACTS) ===
 new_dummy_rpc = r'''
 @app.route('/', methods=['POST', 'GET'])
 def dummy_rpc():
@@ -122,7 +122,7 @@ def dummy_rpc():
         start_time = time.time()
         
         while True:
-            # --- FIX: SLEEP AL PRINCIPIO (Evita la ametralladora de logs) ---
+            # Control de velocidad (Evita spam de logs)
             time.sleep(3)
 
             # Rutas absolutas para encontrar el archivo
@@ -143,30 +143,12 @@ def dummy_rpc():
                     filename = os.path.basename(last_file)
                     print(f"✅ [FIN] Detectado: {filename}", flush=True)
                     
-                    # URL de descarga apuntando a nuestra nueva ruta
+                    # URL de descarga
                     download_url = f"http://green-agent:9009/results/{filename}"
 
-                    # PASO A: Enviar URL del Artefacto (Estado Working)
-                    artifact_msg = {
-                        "jsonrpc": "2.0", "id": 1,
-                        "result": {
-                            "contextId": ctx, "taskId": task,
-                            "final": False, 
-                            "status": {"state": "working"},
-                            "artifacts": [{
-                                "artifactId": "final-results",
-                                "name": "CapsBench Summary",
-                                "mimeType": "application/json",
-                                "url": download_url
-                            }]
-                        }
-                    }
-                    yield "data: " + json.dumps(artifact_msg) + "\n\n"
-                    
-                    # Espera para que el cliente procese la URL
-                    time.sleep(2)
-
-                    # PASO B: Enviar Cierre (Artifacts VACÍO para evitar TypeError)
+                    # --- FIX CRÍTICO: ENVIAR TODO EN UN SOLO MENSAJE FINAL ---
+                    # Enviamos el cierre (final=True) Y los artefactos JUNTOS.
+                    # Así el cliente tiene la lista llena cuando intenta iterarla.
                     final_msg = {
                         "jsonrpc": "2.0", "id": 1,
                         "result": {
@@ -176,7 +158,12 @@ def dummy_rpc():
                             "messageId": "msg-done", 
                             "role": "assistant",
                             "parts": [{"text": "Game Finished", "mimeType": "text/plain"}],
-                            "artifacts": [] 
+                            "artifacts": [{
+                                "artifactId": "final-results",
+                                "name": "CapsBench Summary",
+                                "mimeType": "application/json",
+                                "url": download_url
+                            }]
                         }
                     }
                     yield "data: " + json.dumps(final_msg) + "\n\n"
@@ -184,10 +171,12 @@ def dummy_rpc():
                     print("🏁 Stream cerrado correctamente (RETURN).", flush=True)
                     return 
             
+            # Timeout
             if time.time() - start_time > 3600:
                 print("⏰ Timeout", flush=True)
                 break
-                
+            
+            # Latido normal
             yield "data: " + json.dumps({
                 "jsonrpc": "2.0", "id": 1,
                 "result": {"contextId": ctx, "taskId": task, "final": False, "status": {"state": "working"}}

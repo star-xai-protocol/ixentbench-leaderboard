@@ -98,7 +98,7 @@ def serve_results(filename):
     return jsonify({"error": "File not found"}), 404
 '''
 
-# === 3. RPC FINAL: INYECCIÓN DE ID + COPIA + CIERRE ===
+# === 3. RPC FINAL: WRAPPER STRUCTURE + ID + COPIA ===
 new_dummy_rpc = r'''
 @app.route('/', methods=['POST', 'GET'])
 def dummy_rpc():
@@ -136,35 +136,44 @@ def dummy_rpc():
                     filename = os.path.basename(last_file)
                     print(f"✅ [FIN] Detectado: {filename}", flush=True)
 
-                    # --- 👇 FIX NUEVO: INYECTAR ID DE PARTICIPANTE 👇 ---
+                    # --- 👇 FIX: REESTRUCTURAR JSON (WRAPPER) 👇 ---
                     try:
-                        # 1. Leemos el JSON actual
+                        # 1. Leemos el JSON original (Output del juego)
                         with open(last_file, 'r') as f:
-                            data = json.load(f)
+                            game_data = json.load(f)
                         
-                        # 2. Obtenemos el ID de la variable de entorno (que pasaremos desde Docker)
+                        # 2. Obtenemos tu UUID del entorno
                         agent_id = os.environ.get("AGENT_ID")
                         
-                        # 3. Lo inyectamos si existe
-                        if agent_id:
-                            if "participants" not in data: data["participants"] = {}
-                            # Aquí insertamos el campo clave que falta:
-                            data["participants"]["participant"] = agent_id
-                            print(f"💉 ID Inyectado en JSON: {agent_id}", flush=True)
+                        # 3. Verificamos si ya está envuelto (para no hacerlo dos veces)
+                        # Si tiene "benchmark_version" en la raíz, es el formato crudo que hay que envolver.
+                        if agent_id and "benchmark_version" in game_data:
+                            print(f"📦 Reestructurando JSON para Leaderboard...", flush=True)
                             
-                            # 4. Sobreescribimos el archivo con el dato nuevo
+                            # CREAMOS LA ESTRUCTURA "CORRECTA"
+                            wrapper = {
+                                "participants": {
+                                    "participant": agent_id
+                                },
+                                "results": [ game_data ]  # El juego original va DENTRO de esta lista
+                            }
+                            
+                            # 4. Sobreescribimos el archivo con el formato nuevo
                             with open(last_file, 'w') as f:
-                                json.dump(data, f, indent=2)
+                                json.dump(wrapper, f, indent=2)
+                            
+                            print(f"✨ JSON transformado correctamente con ID: {agent_id}", flush=True)
+                            
                     except Exception as e:
-                        print(f"⚠️ Error inyectando ID: {e}", flush=True)
+                        print(f"⚠️ Error reestructurando JSON: {e}", flush=True)
                     # -----------------------------------------------------
-                    
-                    # --- COPIAR A OUTPUT (Ya lo tenías y funciona) ---
+
+                    # Copiar a Output (Volumen compartido)
                     try:
                         dest_path = "/app/output/results.json"
                         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                         shutil.copy(last_file, dest_path)
-                        print(f"📂 Archivo copiado a: {dest_path}", flush=True)
+                        print(f"📂 Archivo final copiado a: {dest_path}", flush=True)
                     except Exception as e:
                         print(f"⚠️ Error copiando archivo: {e}", flush=True)
 
@@ -374,23 +383,19 @@ def generate_docker_compose(scenario: dict[str, Any]) -> str:
     green = scenario["green_agent"]
     participants = scenario.get("participants", [])
 
-    # --- 👇 FIX NUEVO: Extraer ID del PARTICIPANTE y pasarlo al entorno 👇 ---
+    # --- 👇 FIX: PASAR UUID AL ENTORNO 👇 ---
     if participants:
-        # Cogemos al primer participante (Tu agente Púrpura)
         p_data = participants[0]
-        
-        # Buscamos el UUID real (webhook_id) que nos dio la API
+        # Obtenemos el UUID real
         participant_uuid = p_data.get("webhook_id") or p_data.get("agentbeats_id")
         
         if participant_uuid:
-            # Se lo pasamos al Green Agent como variable de entorno
             if "env" not in green:
                 green["env"] = {}
-            
-            # La variable se llama AGENT_ID para que el script la lea
+            # Pasamos el UUID como variable de entorno
             green["env"]["AGENT_ID"] = participant_uuid
-            print(f"ℹ️ Configurando ID del Participante para el reporte: {participant_uuid}")
-    # -------------------------------------------------------------------------
+            print(f"ℹ️ Configurando ID para el wrapper: {participant_uuid}")
+    # ----------------------------------------
 
     participant_names = [p["name"] for p in participants]
 

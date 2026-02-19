@@ -1,5 +1,7 @@
 {
-  "participants": {},
+  "participants": {
+    "participant":"019c0b17-335b-7553-8b43-81d097bb5387"
+  },
   "results": [
     {
       "benchmark_version": "CapsBench-v1.0",

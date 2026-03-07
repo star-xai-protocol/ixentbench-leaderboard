@@ -311,6 +311,8 @@ services:
     # Así, cuando el green-agent copie el archivo a /app/output, aparecerá en el host.
     volumes:
       - ./output:/app/output
+      # Creado nuevo 
+      - ./output:/app/src/replays
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:{green_port}/status"]
       interval: 5s
